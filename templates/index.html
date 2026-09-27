@@ -170,7 +170,6 @@
     .workspace-header h1 { margin: 5px 0 5px; font-size: 27px; letter-spacing: -.035em; }
     .workspace-header p { color: var(--muted); font-size: 13px; margin: 0; }
     .eyebrow { color: var(--brand); font-size: 11px; letter-spacing: .13em; font-weight: 800; }
-    .local-status { display: flex; align-items: center; gap: 7px; color: #63758b; background: #fff; border: 1px solid var(--line); border-radius: 999px; padding: 7px 11px; font-size: 11px; white-space: nowrap; }
     .page { display: none; }
     .page.active { display: block; animation: page-in .18s ease-out; }
     @keyframes page-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
@@ -644,7 +643,6 @@
       .sidebar-collapsed ~ .content, .content { margin-left: 0; padding: 22px 16px 48px; }
       .workspace-header { margin-bottom: 18px; }
       .workspace-header h1 { font-size: 23px; }
-      .local-status { display: none; }
       .import-intro { display: block; }
       .format-list { justify-content: flex-start; max-width: none; margin-top: 14px; }
       .summary-aside, .two-cols { grid-template-columns: 1fr; }
@@ -723,7 +721,6 @@
         <h1 id="view-title">导入账单</h1>
         <p id="view-description">导入微信、支付宝或银行流水，开始整理你的收支。</p>
       </div>
-      <div class="local-status"><span class="privacy-dot"></span>账本本机保存</div>
     </header>
     <section id="page-import" class="page active">
       <div class="panel">
