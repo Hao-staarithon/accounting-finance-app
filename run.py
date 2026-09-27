@@ -8,14 +8,18 @@ import sys
 import ctypes
 from datetime import datetime
 
-# Qt WebEngine can leave unpainted bands over scrolling dialogs on some Windows
-# graphics drivers. Use its documented software-rendering fallback by default.
-if sys.platform == "win32":
-    os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
+# Qt WebEngine normally uses hardware acceleration. Keep the software fallback
+# available for graphics drivers that show unpainted areas in scrolling dialogs.
+if sys.platform == "win32" and "--software-rendering" in sys.argv:
+    sys.argv.remove("--software-rendering")
+    flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+    if "--disable-gpu" not in flags.split():
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --disable-gpu".strip()
 
 from PySide6.QtCore import QEvent, QObject, QRect, Qt, QUrl, Slot
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QMouseEvent, QPainter, QPen
 from PySide6.QtWebChannel import QWebChannel
+from PySide6.QtWebEngineCore import QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QApplication,
@@ -498,6 +502,7 @@ def main():
 
     title_bar = TitleBar(window)
     web = QWebEngineView()
+    web.settings().setAttribute(QWebEngineSettings.WebAttribute.ScrollAnimatorEnabled, True)
     web.setUrl(QUrl(f"http://127.0.0.1:{port}"))
 
     bridge = Bridge(window, title_bar, web)

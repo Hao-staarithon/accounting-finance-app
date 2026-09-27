@@ -27,6 +27,12 @@ cd 当前目录
 output\dist\每笔有数.exe
 ```
 
+桌面版默认使用显卡加速滚动。如果显卡驱动导致弹窗出现残影或空白，可用兼容模式启动：
+
+```powershell
+.\output\dist\每笔有数.exe --software-rendering
+```
+
 ## 数据位置
 
 数据库只保存在本机：
