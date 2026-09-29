@@ -3005,8 +3005,8 @@ def api_get_transaction_ledgers(tx_id: int):
 def api_set_transaction_ledgers(tx_id: int):
     data = request.get_json(silent=True) or {}
     raw_ids = data.get("ledger_ids")
-    if not isinstance(raw_ids, list) or not raw_ids:
-        return api_error("请至少选择一个账本")
+    if not isinstance(raw_ids, list):
+        return api_error("账本列表无效")
     try:
         ids = {int(value) for value in raw_ids}
     except (TypeError, ValueError):
@@ -3031,7 +3031,7 @@ def api_set_transaction_ledgers(tx_id: int):
         current_primary = 0 if tx["branch"] == "生活" else next(
             (ledger_id for ledger_id, name in names.items() if name == tx["branch"]), None
         )
-        if current_primary not in ids:
+        if ids and current_primary not in ids:
             primary = 0 if 0 in ids else min(ids)
             conn.execute("UPDATE transactions SET branch=? WHERE id=?",
                          ("生活" if primary == 0 else names[primary], tx_id))

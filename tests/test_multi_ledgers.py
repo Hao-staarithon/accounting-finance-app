@@ -252,6 +252,32 @@ class MultiLedgerTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/transactions?branch=__unassigned__").get_json()["items"], [])
         self.assertEqual(self.client.get(f"/api/ledgers/{self.dy}/display").get_json()["items"][0]["id"], tx_id)
 
+    def test_last_ledger_can_be_removed_without_deleting_source_transaction(self):
+        tx_id = self.add(branch="dy", amount="78.50")
+        original = self.row(tx_id)
+        self.assertEqual(self.client.get(f"/api/transactions/{tx_id}/ledgers").get_json()["ledger_ids"],
+                         [self.dy])
+
+        response = self.client.post(f"/api/transactions/{tx_id}/ledgers", json={"ledger_ids": []})
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()["ledger_ids"], [])
+        self.assertEqual(self.client.get(f"/api/transactions/{tx_id}/ledgers").get_json()["ledger_ids"], [])
+        self.assertEqual(self.client.get(f"/api/ledgers/{self.dy}/display").get_json()["items"], [])
+        self.assertEqual([item["id"] for item in self.client.get(
+            "/api/transactions?branch=__unassigned__"
+        ).get_json()["items"]], [tx_id])
+        self.assertEqual(self.row(tx_id), original)
+
+        response = self.client.post(f"/api/transactions/{tx_id}/ledgers", json={
+            "ledger_ids": [self.dy, self.work],
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(self.client.get("/api/transactions?branch=__unassigned__").get_json()["items"], [])
+        for ledger_id in (self.dy, self.work):
+            self.assertEqual(self.client.get(f"/api/ledgers/{ledger_id}/display").get_json()["items"][0]["id"],
+                             tx_id)
+        self.assertEqual(self.row(tx_id), original)
+
     def test_display_group_syncs_to_ledgers_with_a_member(self):
         first = self.add(branch="dy", amount="100")
         second = self.add(branch="dy", amount="30", direction="收入")

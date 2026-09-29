@@ -1159,7 +1159,7 @@
         <h2 id="transaction-ledgers-title" style="margin:0;">交易所属账本</h2>
         <button id="btn-transaction-ledgers-close" class="modal-close">×</button>
       </div>
-      <p class="small">可同时选择主账本和多个独立账本。这里的手动设置优先于分类自动规则。</p>
+      <p class="small">可同时选择主账本和多个独立账本。取消所有勾选并保存，可将交易移至“账单明细 → 未分配账本”；原始流水仍保留，可随时重新加入账本。</p>
       <div id="transaction-ledgers-options" style="max-height:280px;overflow:auto;"></div>
       <div class="row" style="justify-content:space-between;margin-top:16px;">
         <button id="btn-transaction-ledger-create">新建账本</button>
@@ -3028,11 +3028,10 @@
     $("#btn-transaction-ledgers-save").addEventListener("click", async () => {
       if (editingLedgerTxId == null) return;
       const ledger_ids = $$("#transaction-ledgers-options input:checked").map((input) => Number(input.value));
-      if (!ledger_ids.length) { showFlash("请至少选择一个账本", true); return; }
       try {
         await api(`/api/transactions/${editingLedgerTxId}/ledgers`, {method: "POST", body: {ledger_ids}});
         $("#transaction-ledgers-modal").classList.add("hidden");
-        showFlash("账本归属已更新");
+        showFlash(ledger_ids.length ? "账本归属已更新" : "已移至未分配账本");
         await loadLedgers();
         await loadDetail();
         loadExcluded(); loadSummary();
