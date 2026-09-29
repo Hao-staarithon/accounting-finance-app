@@ -1315,7 +1315,8 @@
         <button id="btn-ledger-group-close" class="modal-close">×</button>
       </div>
       <p id="ledger-group-preview" class="muted"></p>
-      <p class="small">这里只改变独立账本中的展示。数据库里仍保留全部原始交易，可随时拆开展示。</p>
+      <p id="ledger-group-impact" class="small"></p>
+      <p class="small">组合会同步到已有任一成员的独立账本，缺少的交易会自动加入；原始交易仍保留，可随时拆开展示。</p>
       <input id="ledger-group-title" type="text" maxlength="80" placeholder="组合名称（可选）" style="width:100%;">
       <div class="row" style="justify-content:flex-end;margin-top:16px;">
         <button class="primary" id="btn-ledger-group-save">组合显示</button>
@@ -1724,6 +1725,13 @@
       const members = Array.from(ledgerSelectedIds).map((id) => ledgerDisplayItems.find((item) => String(item.id) === id));
       const sourceCount = members.reduce((sum, item) => sum + (item.type === "group" ? item.members.length : 1), 0);
       if (sourceCount > 200) { showFlash("组合最多包含 200 笔原始流水", true); return; }
+      const sources = members.flatMap((item) => item.type === "group" ? item.members : [item]);
+      const affected = allLedgers.filter((ledger) => !ledger.deleted && sources.some((item) =>
+        (item.ledger_ids || []).includes(ledger.id)));
+      $("#ledger-group-impact").textContent = "会影响：" + affected.map((ledger) => {
+        const missing = sources.filter((item) => !(item.ledger_ids || []).includes(ledger.id)).length;
+        return ledger.name + (missing ? `（补入 ${missing} 笔）` : "");
+      }).join("、");
       const signedCents = members.reduce((sum, item) =>
         sum + Math.round(Number(item.amount || 0) * 100) * (item.direction === "支出" ? 1 : -1), 0);
       $("#ledger-group-preview").textContent = members.map((item) =>
@@ -1737,20 +1745,20 @@
       const ledger = currentLedgerItem();
       if (!ledger || ledgerSelectedIds.size < 2 || ledgerSelectedIds.size > 200) return;
       try {
-        await api(`/api/ledgers/${ledger.id}/display-groups`, {
+        const result = await api(`/api/ledgers/${ledger.id}/display-groups`, {
           method: "POST", body: { item_ids: Array.from(ledgerSelectedIds), title: $("#ledger-group-title").value.trim() }
         });
         $("#ledger-group-modal").classList.add("hidden");
         ledgerDisplayFilter = null;
         $("#ledger-display-title").textContent = `${currentLedger} · 账本明细`;
-        showFlash("已组合显示，原始交易仍保留");
+        showFlash(`已同步组合到：${(result.affected_ledgers || []).map((item) => item.name).join("、")}`);
         await loadLedgerStats();
       } catch (err) { showFlash(err.message, true); }
     });
     async function ungroupLedgerDisplay(groupId) {
       try {
         await api(`/api/ledger-display-groups/${groupId}`, { method: "DELETE" });
-        showFlash("已拆开展示");
+        showFlash("已在所有相关账本拆开展示");
         await loadLedgerStats();
       } catch (err) { showFlash(err.message, true); }
     }

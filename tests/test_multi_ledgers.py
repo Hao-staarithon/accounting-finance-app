@@ -252,26 +252,168 @@ class MultiLedgerTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/transactions?branch=__unassigned__").get_json()["items"], [])
         self.assertEqual(self.client.get(f"/api/ledgers/{self.dy}/display").get_json()["items"][0]["id"], tx_id)
 
-    def test_display_groups_are_independent_in_each_ledger(self):
-        first = self.add(amount="100")
-        second = self.add(amount="30", direction="收入")
-        self.assertEqual(self.client.put("/api/category-ledger-rules", json={
-            "category": "吃饭", "ledger_ids": [self.dy, self.work],
+    def test_display_group_syncs_to_ledgers_with_a_member(self):
+        first = self.add(branch="dy", amount="100")
+        second = self.add(branch="dy", amount="30", direction="收入")
+        untouched = self.client.post("/api/ledgers", json={"name": "无关账本"}).get_json()["item"]["id"]
+        self.assertEqual(self.client.post(f"/api/transactions/{second}/ledgers", json={
+            "ledger_ids": [self.dy, self.work],
         }).status_code, 200)
-        for ledger_id in (self.dy, self.work):
-            response = self.client.post(f"/api/ledgers/{ledger_id}/display-groups", json={
-                "tx_ids": [first, second],
-            })
-            self.assertEqual(response.status_code, 200, response.get_json())
-            self.assertEqual(len(self.client.get(
-                f"/api/ledgers/{ledger_id}/display").get_json()["items"]), 1)
+        response = self.client.post(f"/api/ledgers/{self.dy}/display-groups", json={
+            "tx_ids": [first, second], "title": "实习净额",
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        group_id = response.get_json()["group_id"]
+        self.assertEqual(response.get_json()["affected_ledgers"], [
+            {"id": self.dy, "name": "dy", "added": 0},
+            {"id": self.work, "name": "长期投入", "added": 1},
+        ])
+        self.assertEqual(self.client.get(f"/api/ledgers/{untouched}/display").get_json()["items"], [])
+        self.assertEqual(self.client.get(f"/api/transactions/{first}/ledgers").get_json()["ledger_ids"],
+                         [self.dy, self.work])
+        self.assertEqual(self.client.post(f"/api/transactions/{first}/ledger-amount", json={
+            "ledger_id": self.work, "amount": "80",
+        }).status_code, 200)
+        for ledger_id, expected_expense in ((self.dy, 70), (self.work, 50)):
+            display = self.client.get(f"/api/ledgers/{ledger_id}/display").get_json()
+            self.assertEqual(display["expense"], expected_expense)
+            self.assertEqual([(item["type"], item["group_id"]) for item in display["items"]],
+                             [("group", group_id)])
         self.assertEqual(self.client.post(f"/api/transactions/{first}/category", json={
             "category": "玩乐", "remember": False,
         }).status_code, 200)
+        self.assertEqual(self.client.get(f"/api/ledgers/{self.work}/display").get_json()["items"][0]["type"],
+                         "group")
+        self.assertEqual(self.client.post(f"/api/transactions/{first}/ledgers", json={
+            "ledger_ids": [self.dy],
+        }).status_code, 200)
+        self.assertEqual(self.client.get(f"/api/ledgers/{self.dy}/display").get_json()["items"][0]["type"],
+                         "group")
+        self.assertEqual(self.client.get(f"/api/ledgers/{self.work}/display").get_json()["items"][0]["type"],
+                         "transaction")
+        self.assertEqual(self.client.post(f"/api/transactions/{first}/ledgers", json={
+            "ledger_ids": [self.dy, self.work],
+        }).status_code, 200)
+        self.assertEqual(self.client.get(f"/api/ledgers/{self.work}/display").get_json()["items"][0]["type"],
+                         "group")
+        self.assertEqual(self.client.delete(f"/api/ledger-display-groups/{group_id}").status_code, 200)
         for ledger_id in (self.dy, self.work):
-            items = self.client.get(f"/api/ledgers/{ledger_id}/display").get_json()["items"]
-            self.assertEqual(len(items), 1)
-            self.assertEqual(items[0]["type"], "transaction")
+            self.assertEqual(len(self.client.get(f"/api/ledgers/{ledger_id}/display").get_json()["items"]), 2)
+        self.assertEqual(self.row(first)["amount"], 100)
+
+    def test_existing_display_groups_upgrade_to_shared_view(self):
+        first = self.add(branch="dy", amount="100")
+        second = self.add(branch="dy", amount="20")
+        self.assertEqual(self.client.post(f"/api/transactions/{second}/ledgers", json={
+            "ledger_ids": [self.dy, self.work],
+        }).status_code, 200)
+        conn = bill_app.get_db()
+        try:
+            conn.execute("DELETE FROM app_migrations WHERE name='shared_display_groups_v1'")
+            group_id = conn.execute(
+                "INSERT INTO ledger_display_groups(ledger_id, title) VALUES (?, '旧组合')", (self.dy,)
+            ).lastrowid
+            conn.executemany(
+                "INSERT INTO ledger_display_group_items(group_id, ledger_id, tx_id) VALUES (?, ?, ?)",
+                [(group_id, self.dy, tx_id) for tx_id in (first, second)],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        bill_app.init_db()
+        display = self.client.get(f"/api/ledgers/{self.work}/display").get_json()
+        self.assertEqual([(item["type"], item["group_id"]) for item in display["items"]],
+                         [("group", group_id)])
+        self.assertTrue(any(name.startswith("bill_data_before_shared_groups_")
+                            for name in os.listdir(self.temp_dir.name)))
+        bill_app.init_db()
+        self.assertEqual(len(self.client.get(f"/api/ledgers/{self.work}/display").get_json()["items"]), 1)
+
+    def test_shared_group_can_be_extended_from_another_ledger(self):
+        first = self.add(branch="dy", amount="100")
+        second = self.add(branch="dy", amount="30", direction="收入")
+        third = self.add(branch="长期投入", amount="20")
+        self.assertEqual(self.client.post(f"/api/transactions/{second}/ledgers", json={
+            "ledger_ids": [self.dy, self.work],
+        }).status_code, 200)
+        first_group = self.client.post(f"/api/ledgers/{self.dy}/display-groups", json={
+            "tx_ids": [first, second],
+        }).get_json()["group_id"]
+        response = self.client.post(f"/api/ledgers/{self.work}/display-groups", json={
+            "item_ids": [f"g-{first_group}", third],
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()["affected_ledgers"], [
+            {"id": self.dy, "name": "dy", "added": 1},
+            {"id": self.work, "name": "长期投入", "added": 0},
+        ])
+        for ledger_id in (self.dy, self.work):
+            display = self.client.get(f"/api/ledgers/{ledger_id}/display").get_json()
+            self.assertEqual(len(display["items"]), 1)
+            self.assertEqual(len(display["items"][0]["members"]), 3)
+            self.assertEqual(display["expense"], 90)
+        self.assertEqual(self.client.get(f"/api/transactions/{third}/ledgers").get_json()["ledger_ids"],
+                         [self.dy, self.work])
+
+    def test_legacy_overlapping_groups_keep_newest_group(self):
+        first = self.add(branch="dy")
+        shared = self.add(branch="dy")
+        third = self.add(branch="长期投入")
+        self.assertEqual(self.client.post(f"/api/transactions/{shared}/ledgers", json={
+            "ledger_ids": [self.dy, self.work],
+        }).status_code, 200)
+        conn = bill_app.get_db()
+        try:
+            conn.execute("DELETE FROM app_migrations WHERE name='shared_display_groups_v1'")
+            older = conn.execute(
+                "INSERT INTO ledger_display_groups(ledger_id, title) VALUES (?, '旧组合')", (self.dy,)
+            ).lastrowid
+            newer = conn.execute(
+                "INSERT INTO ledger_display_groups(ledger_id, title) VALUES (?, '新组合')", (self.work,)
+            ).lastrowid
+            conn.executemany(
+                "INSERT INTO ledger_display_group_items(group_id, ledger_id, tx_id) VALUES (?, ?, ?)",
+                [(older, self.dy, first), (older, self.dy, shared),
+                 (newer, self.work, shared), (newer, self.work, third)],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        bill_app.init_db()
+        conn = bill_app.get_db()
+        try:
+            self.assertIsNone(conn.execute(
+                "SELECT id FROM ledger_display_groups WHERE id=?", (older,)
+            ).fetchone())
+        finally:
+            conn.close()
+        for ledger_id in (self.dy, self.work):
+            display = self.client.get(f"/api/ledgers/{ledger_id}/display").get_json()
+            groups = [item for item in display["items"] if item["type"] == "group"]
+            self.assertEqual([item["group_id"] for item in groups], [newer])
+
+    def test_conflicting_shared_group_does_not_change_memberships(self):
+        first = self.add(branch="dy")
+        second = self.add(branch="dy")
+        third = self.add(branch="长期投入")
+        self.assertEqual(self.client.post(f"/api/transactions/{first}/ledgers", json={
+            "ledger_ids": [self.dy, self.work],
+        }).status_code, 200)
+        group_id = self.client.post(f"/api/ledgers/{self.dy}/display-groups", json={
+            "tx_ids": [first, second],
+        }).get_json()["group_id"]
+        self.assertEqual(self.client.post(f"/api/transactions/{second}/ledgers", json={
+            "ledger_ids": [self.dy],
+        }).status_code, 200)
+        response = self.client.post(f"/api/ledgers/{self.work}/display-groups", json={
+            "tx_ids": [first, third],
+        })
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("dy", response.get_json()["error"])
+        self.assertEqual(self.client.get(f"/api/transactions/{third}/ledgers").get_json()["ledger_ids"],
+                         [self.work])
+        self.assertEqual(self.client.get(f"/api/ledgers/{self.dy}/display").get_json()["items"][0]["group_id"],
+                         group_id)
 
     def test_existing_group_can_be_combined_again_and_fully_split(self):
         first = self.add(branch="dy", amount="100")
