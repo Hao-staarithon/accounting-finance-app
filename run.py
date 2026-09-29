@@ -19,7 +19,6 @@ if sys.platform == "win32" and "--software-rendering" in sys.argv:
 from PySide6.QtCore import QEvent, QObject, QRect, Qt, QUrl, Slot
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QMouseEvent, QPainter, QPen
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtWebEngineCore import QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QApplication,
@@ -502,7 +501,6 @@ def main():
 
     title_bar = TitleBar(window)
     web = QWebEngineView()
-    web.settings().setAttribute(QWebEngineSettings.WebAttribute.ScrollAnimatorEnabled, True)
     web.setUrl(QUrl(f"http://127.0.0.1:{port}"))
 
     bridge = Bridge(window, title_bar, web)
