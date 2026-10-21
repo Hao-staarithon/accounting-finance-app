@@ -138,6 +138,29 @@ class BatchOrganizeTests(unittest.TestCase):
         self.assertTrue(all(row["category"] == "学习" for row in self.rows()))
         self.assertEqual(self.batch(ids=[ids[0]] * 5001, category="其他").status_code, 400)
 
+    def test_excluded_view_can_organize_without_restoring_or_changing_totals(self):
+        tx_id = self.ids[1]
+        self.client.post(f"/api/transactions/{tx_id}/count", json={
+            "count_in_expense": False, "exclude_reason": "保留排除原因",
+        })
+        before = self.client.get("/api/summary?month=2026-10").get_json()
+        response = self.batch(ids=[tx_id], category="学习", ledger_mode="add", ledger_ids=[self.b], scope="excluded")
+        self.assertEqual(response.status_code, 200, response.get_json())
+        row = next(item for item in self.client.get("/api/transactions?count_in_expense=0").get_json()["items"] if item["id"] == tx_id)
+        self.assertEqual(row["category"], "学习")
+        self.assertEqual(row["count_in_expense"], 0)
+        self.assertEqual(row["exclude_reason"], "保留排除原因")
+        self.assertEqual(row["ledger_ids"], [0, self.a, self.b])
+        self.assertEqual(self.client.get("/api/summary?month=2026-10").get_json(), before)
+
+    def test_excluded_scope_rejects_mixed_or_stale_selection_atomically(self):
+        self.client.post(f"/api/transactions/{self.ids[0]}/count", json={"count_in_expense": False})
+        before = self.rows()
+        self.assertEqual(self.batch(ids=self.ids[:2], category="学习", scope="excluded").status_code, 400)
+        self.assertEqual(self.rows(), before)
+        self.assertEqual(self.batch(ids=self.ids, category="学习", scope="all").status_code, 400)
+        self.assertEqual(self.rows(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -207,6 +207,76 @@ CHECKS = r"""
     assert(detailState.items.every(item=>![3,4].includes(item.id)), 'total bill reflects removed main memberships');
     assert(document.querySelector('#btn-detail-batch').disabled, 'batch selection resets after applying');
     console.log('PASS: batch group/member selection, category and ledger changes, stable row refresh');
+
+    const allTables = [...document.querySelectorAll('table')];
+    const batchButton = source => source === 'detail' ? document.querySelector('#btn-detail-batch')
+      : source === 'ledger' ? document.querySelector('#btn-ledger-batch')
+      : transactionTables[source]?.toolbar.querySelector('[data-table-batch]');
+    assert(allTables.length > 0 && allTables.every(table => table.dataset.transactionTable &&
+      table.querySelector('thead input[type="checkbox"]') && batchButton(table.dataset.transactionTable)), 'every table has selection and a batch action');
+    assert(allTables.every(table => [...table.querySelectorAll('th[data-col]')].every(th =>
+      th.dataset.col === 'actions' || th.querySelector('.column-menu-button'))), 'every data column has filter and sorting');
+
+    selectedComboLedgers=[0]; await loadSummary();
+    document.querySelector('#btn-combined-details').click();
+    header('#combined-table','amount').click(); menu().querySelector('[data-sort="desc"]').click();
+    equal(transactionTables.combined.visible.map(item=>item.amount),[50,10,5,2],'combined table amount sorting');
+    header('#combined-table','amount').click(); menu().querySelector('[data-range="min"]').value='10'; apply();
+    document.querySelector('#combined-table .table-select-all').click();
+    equal([...transactionTables.combined.selected].sort((a,b)=>a-b),[2,6],'combined select all respects range filter');
+    batchButton('combined').click();
+    document.querySelector('#batch-organize-category').value='学习';
+    document.querySelector('#batch-organize-mode').value='add';
+    document.querySelector('#batch-organize-mode').dispatchEvent(new Event('change'));
+    document.querySelector(`#batch-organize-ledgers input[value="${target}"]`).click();
+    document.querySelector('#btn-batch-organize-save').click();
+    await until(()=>[2,6].every(id=>transactionTables.combined.items.find(item=>item.id===id)?.category==='学习') &&
+      document.querySelector('#batch-organize-modal').classList.contains('hidden'),'combined batch refresh');
+    for(const id of [2,6]) assert((await api(`/api/transactions/${id}/ledgers`)).ledger_ids.includes(target),'combined batch applied to raw transaction');
+    transactionTables.combined.tools.reset();
+    document.querySelector('#btn-combined-details-close').click();
+
+    await openDrill('学习','2026-10');
+    equal(transactionTables.drill.items.map(item=>item.id).sort((a,b)=>a-b),[2,6],'summary category detail loaded');
+    header('#drill-table','counterparty').click(); search('书店'); apply();
+    document.querySelector('#drill-table .table-select-all').click();
+    equal([...transactionTables.drill.selected],[2],'drill select all respects column search');
+    batchButton('drill').click(); document.querySelector('#batch-organize-category').value='购物';
+    document.querySelector('#btn-batch-organize-save').click();
+    await until(()=>transactionTables.drill.items.length===1 && transactionTables.drill.items[0].id===6 &&
+      document.querySelector('#batch-organize-modal').classList.contains('hidden'),'summary drill removes reclassified transaction');
+    assert(transactionTables.drill.visible.length===0 && transactionTables.drill.selected.size===0,'drill keeps filter and clears hidden selection');
+    document.querySelector('#btn-drill-close').click();
+    await openLedgerDrill('学习','支出');
+    equal(transactionTables.drill.visible.map(item=>item.id),[6],'independent category detail resets previous context filters');
+    document.querySelector('#drill-table .table-select-all').click(); batchButton('drill').click();
+    document.querySelector('#batch-organize-category').value='吃饭'; document.querySelector('#btn-batch-organize-save').click();
+    await until(()=>transactionTables.drill.items.length===0 && document.querySelector('#batch-organize-modal').classList.contains('hidden'),'independent category detail batch refresh');
+    document.querySelector('#btn-drill-close').click();
+
+    for(const id of [3,4]) await api(`/api/transactions/${id}/count`,{method:'POST',body:{count_in_expense:false,exclude_reason:'保留排除原因'}});
+    const beforeTotal=(await api('/api/summary?month=2026-10')).total;
+    switchPage('excluded'); await loadExcluded();
+    header('#excluded-table','amount').click(); menu().querySelector('[data-sort="desc"]').click();
+    equal(transactionTables.excluded.visible.map(item=>item.amount),[100,30],'excluded amount sorting');
+    header('#excluded-table','counterparty').click(); search('书店'); apply();
+    document.querySelector('#excluded-table .table-select-all').click();
+    equal([...transactionTables.excluded.selected],[4],'excluded select all respects filters');
+    batchButton('excluded').click();
+    assert(document.querySelector('#batch-organize-count').textContent.includes('仍保留在不记录'),'excluded batch explains record state');
+    document.querySelector('#batch-organize-category').value='玩乐';
+    document.querySelector('#batch-organize-mode').value='add'; document.querySelector('#batch-organize-mode').dispatchEvent(new Event('change'));
+    document.querySelector(`#batch-organize-ledgers input[value="${currentLedgerItem().id}"]`).click();
+    document.querySelector('#btn-batch-organize-save').click();
+    await until(()=>transactionTables.excluded.items.find(item=>item.id===4)?.category==='玩乐' &&
+      document.querySelector('#batch-organize-modal').classList.contains('hidden'),'excluded batch refresh');
+    const excluded=(await api('/api/transactions?count_in_expense=0')).items;
+    const changed=excluded.find(item=>item.id===4);
+    assert(changed.count_in_expense===0 && changed.exclude_reason==='保留排除原因','excluded batch preserves exclusion and reason');
+    assert(changed.ledger_ids.includes(currentLedgerItem().id),'excluded membership updated');
+    assert(excluded.find(item=>item.id===3).category==='购物','excluded unselected row unaffected');
+    assert((await api('/api/summary?month=2026-10')).total===beforeTotal,'excluded batch leaves accounting totals unchanged');
+    console.log('PASS: every table has filters, sorting, selection and bulk classification/membership, including excluded and both category drills');
     window.__tableCheck = {done:true, success:true};
   } catch (error) {
     console.error(error.stack);

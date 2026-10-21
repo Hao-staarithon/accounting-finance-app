@@ -3217,6 +3217,9 @@ def api_batch_organize():
     except (TypeError, ValueError):
         return api_error("交易 ID 无效")
     category = data.get("category")
+    scope = data.get("scope", "recorded")
+    if scope not in ("recorded", "excluded"):
+        return api_error("交易列表范围无效")
     mode = data.get("ledger_mode", "keep")
     if mode not in ("keep", "add", "replace", "remove"):
         return api_error("账本设置方式无效")
@@ -3257,8 +3260,9 @@ def api_batch_organize():
             ).fetchall())
         if len(rows) != len(ids):
             return api_error("部分交易不存在，请刷新后重试", 404)
-        if any(row["is_deleted"] or row["is_duplicate"] or not row["count_in_expense"] for row in rows):
-            return api_error("选中的交易已删除、合并或移至不记录，请刷新后重试")
+        if any(row["is_deleted"] or row["is_duplicate"]
+               or bool(row["count_in_expense"]) != (scope == "recorded") for row in rows):
+            return api_error("选中的交易已不在当前列表（删除、合并或记录状态变化），请刷新后重试")
         if category is not None:
             conn.executemany(
                 "UPDATE transactions SET category=?, category_source='人工' WHERE id=?",

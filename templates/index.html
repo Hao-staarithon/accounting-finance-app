@@ -820,7 +820,7 @@
       <div class="panel detail-table-panel">
         <div class="table-view-status"><span id="detail-table-status">点击表头筛选或排序</span><button id="btn-detail-table-reset" class="small hidden">清除表头筛选和排序</button></div>
         <div class="table-wrap">
-          <table id="detail-table">
+          <table id="detail-table" data-transaction-table="detail">
             <thead>
               <tr>
                 <th><input type="checkbox" id="check-all"></th>
@@ -859,8 +859,9 @@
         </div>
       </div>
       <div class="panel detail-table-panel">
+        <div id="excluded-table-tools"></div>
         <div class="table-wrap">
-          <table>
+          <table id="excluded-table">
             <thead><tr><th>时间</th><th>来源</th><th>账本归属</th><th>交易对方</th><th>说明</th><th>金额</th><th>原因</th><th>操作</th></tr></thead>
             <tbody id="excluded-list"></tbody>
           </table>
@@ -1082,9 +1083,10 @@
         <h2 id="drill-title" style="margin:0;">分类明细</h2>
         <button id="btn-drill-close" class="modal-close">×</button>
       </div>
+      <div id="drill-table-tools"></div>
       <div class="table-wrap drill-table-wrap">
-        <table class="drill-table">
-          <colgroup><col style="width:145px"><col style="width:88px"><col style="width:155px"><col style="width:190px"><col style="width:105px"><col style="width:65px"><col style="width:120px"><col style="width:182px"></colgroup>
+        <table id="drill-table" class="drill-table">
+          <colgroup><col style="width:42px"><col style="width:145px"><col style="width:88px"><col style="width:155px"><col style="width:190px"><col style="width:105px"><col style="width:65px"><col style="width:120px"><col style="width:182px"></colgroup>
           <thead>
             <tr>
               <th>时间</th><th>来源</th><th>交易对方</th><th>说明/摘要</th>
@@ -1093,6 +1095,7 @@
           </thead>
           <tbody id="drill-body"></tbody>
         </table>
+        <div id="drill-empty" class="empty hidden">暂无记录</div>
       </div>
       <div class="row" style="margin-top:12px; justify-content:flex-end;">
         <button class="primary" id="btn-drill-to-detail">在明细中查看</button>
@@ -1266,8 +1269,9 @@
         <button id="btn-combined-details-close" class="modal-close">×</button>
       </div>
       <p class="small">重叠交易只显示一次。“金额来源”说明该笔交易采用哪个账本的核算金额。</p>
+      <div id="combined-table-tools"></div>
       <div class="table-wrap ledger-display-scroll">
-         <table><thead><tr><th>时间</th><th>交易对方</th><th>分类</th><th>账本</th><th>收支</th><th>金额</th><th>金额来源</th></tr></thead>
+         <table id="combined-table"><thead><tr><th>时间</th><th>交易对方</th><th>分类</th><th>账本</th><th>收支</th><th>金额</th><th>金额来源</th></tr></thead>
           <tbody id="combined-details-body"></tbody></table>
         <div id="combined-details-empty" class="empty hidden">所选账本本月没有交易</div>
       </div>
@@ -1290,7 +1294,7 @@
         </div>
       </div>
       <div class="table-wrap ledger-display-scroll">
-        <table class="ledger-display-table">
+        <table class="ledger-display-table" data-transaction-table="ledger">
             <thead><tr><th><input id="ledger-check-all" type="checkbox" aria-label="全选当前筛选结果"></th><th data-col="time">时间</th><th data-col="title">交易/组合</th><th data-col="category">分类</th><th data-col="branch">账本</th><th data-col="original_amount">原始金额</th><th data-col="amount">账本金额</th></tr></thead>
           <tbody id="ledger-display-body"></tbody>
         </table>
@@ -1395,6 +1399,7 @@
   <div id="flash" class="flash hidden"></div>
 
   <script src="/static/table-tools.js"></script>
+  <script src="/static/transaction-table.js"></script>
   <script>
     const $ = (sel) => document.querySelector(sel);
     const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -1938,22 +1943,8 @@
         const data = await api("/api/transactions?" + q.toString());
         const items = (data.items || []).filter((t) => t.direction === direction && !t.is_duplicate);
         drillItems = items;
-        $("#drill-body").innerHTML = items.map((t) => `
-          <tr>
-            <td class="mono">${dateTimeLines(t.transaction_time)}</td>
-            <td>${esc(sourceName[t.source] || t.source)}</td>
-            <td>${esc(t.counterparty || "—")}</td>
-            <td>${esc(t.description || "—")}</td>
-            <td class="amount ${dirClass[t.direction] || "neutral"}">¥${Number(t.amount || 0).toFixed(2)}</td>
-            <td>${esc(t.direction)}</td>
-            <td><select data-current-category="${esc(t.category || "其他")}" onchange="chooseCategory(this, ${t.id}, 'ledgerDrill')">
-              ${categoryOptions(t.category)}
-            </select></td>
-            <td class="nowrap">
-              <button class="small" onclick="openTransactionLedgers(${t.id})">账本（${(t.ledger_ids || []).length}）</button>
-              ${transactionActionSelect(t.id, "ledgerDrill")}
-            </td>
-          </tr>`).join("") || '<tr><td colspan="8" class="empty">该分类没有记录</td></tr>';
+        transactionTables.drill.setContext(`${activeDrill}|${drillMonth}|${drillCategory}|${drillDirection}`);
+        transactionTables.drill.setRows(items);
         $("#drill-modal").classList.remove("hidden");
       } catch (err) { showFlash(err.message, true); }
     }
@@ -3027,18 +3018,7 @@
           [t.counterparty, t.description, t.exclude_reason, t.branch, t.note]
             .some((value) => String(value || "").toLowerCase().includes(keyword))) : items;
         $("#excluded-count").textContent = `${items.length} 笔`;
-        $("#excluded-list").innerHTML = visible.map((t) => `<tr>
-          <td class="mono">${dateTimeLines(t.transaction_time)}</td>
-          <td>${esc(sourceName[t.source] || t.source)}</td>
-          <td><button class="small" onclick="openTransactionLedgers(${t.id})">账本（${(t.ledger_ids || []).length}）</button></td>
-          <td>${esc(t.counterparty || "—")}</td>
-          <td>${esc(t.description || "—")}</td>
-          <td class="amount ${dirClass[t.direction] || "neutral"}">¥${Number(t.amount || 0).toFixed(2)}<div class="small">${esc(t.direction || "")}</div></td>
-          <td>${esc(t.exclude_reason || "手动设为不记录")}</td>
-          <td><button class="small" onclick="restoreExcluded(${t.id})">恢复到账单</button></td>
-        </tr>`).join("");
-        $("#excluded-empty").textContent = items.length ? "没有符合搜索条件的条目" : "这里还没有不记录的条目";
-        $("#excluded-empty").classList.toggle("hidden", visible.length > 0);
+        transactionTables.excluded.setRows(visible);
       } catch (err) { showFlash(err.message, true); }
     }
     async function restoreExcluded(id) {
@@ -3063,12 +3043,13 @@
     let detailState = { selected: new Set(), items: [] };
     let batchOrganizeContext = null;
     function openBatchOrganize(source) {
-      const ids = source === "ledger" ? selectedLedgerSourceIds() : [...detailState.selected];
+      const ids = source === "ledger" ? selectedLedgerSourceIds()
+        : source === "detail" ? [...detailState.selected] : [...transactionTables[source].selected];
       if (!ids.length || ids.length > 5000) { showFlash("请选择 1 至 5000 笔原始交易", true); return; }
       batchOrganizeContext = { source, ids };
       $("#batch-organize-count").textContent = source === "ledger"
         ? `将统一设置 ${ids.length} 笔原始交易；选中的整组会包含组内全部流水。`
-        : `将统一设置总账单中选中的 ${ids.length} 笔原始交易。`;
+        : `将统一设置${({detail:"总账单", excluded:"不记录", drill:"分类明细", combined:"综合计算明细"})[source]}中选中的 ${ids.length} 笔原始交易。${source === "excluded" ? "修改后仍保留在不记录，不会自动计入收支。" : ""}`;
       $("#batch-organize-category").innerHTML = '<option value="">不修改分类</option>' + allCategories.map(category =>
         `<option value="${esc(category)}">${esc(category)}</option>`).join("");
       $("#batch-organize-mode").value = "keep";
@@ -3108,18 +3089,48 @@
       button.disabled = true;
       try {
         const result = await api("/api/transactions/batch-organize", {
-          method: "POST", body: { ids, ...(category ? {category} : {}), ledger_mode, ledger_ids }
+          method: "POST", body: { ids, ...(category ? {category} : {}), ledger_mode, ledger_ids, scope: source === "excluded" ? "excluded" : "recorded" }
         });
         $("#batch-organize-modal").classList.add("hidden");
         ledgerSelectedIds.clear(); ledgerSelectedMembers.clear(); detailState.selected.clear();
+        Object.values(transactionTables).forEach(table => table.clearSelection());
         updateSelectionBar();
         showFlash(`已更新 ${result.updated} 笔交易的分类和账本设置`);
         await loadLedgers();
-        if (source === "detail") await loadDetail();
-        loadSummary();
+        if (source === "detail" || $("#page-detail").classList.contains("active")) await loadDetail();
+        await loadSummary();
+        if (source === "excluded" || $("#page-excluded").classList.contains("active")) await loadExcluded();
+        if (source === "drill" && !$("#drill-modal").classList.contains("hidden")) {
+          if (activeDrill === "ledger") await openLedgerDrill(drillCategory, drillDirection);
+          else await openDrill(drillCategory, drillMonth);
+        }
       } catch (err) { showFlash(err.message, true); }
       finally { button.disabled = false; }
     });
+    const transactionColumns = {
+      time: {key:"time", label:"时间", type:"date", value:item=>(item.transaction_time || "").slice(0,10), sortValue:item=>item.transaction_time, className:"mono", cell:item=>dateTimeLines(item.transaction_time)},
+      source: {key:"source", label:"来源", value:item=>sourceName[item.source] || item.source},
+      counterparty: {key:"counterparty", label:"交易对方", value:item=>item.counterparty || item.description || "交易"},
+      description: {key:"description", label:"说明/摘要", value:item=>item.description || ""},
+      category: {key:"category", label:"分类", value:item=>item.category || "其他"},
+      branch: {key:"branch", label:"账本", value:tableLedgerNames, cell:item=>`<button class="small" onclick="openTransactionLedgers(${item.id})">账本（${(item.ledger_ids || []).length}）</button>`},
+      amount: {key:"amount", label:"金额", type:"number", value:item=>Number(item.amount || 0), format:value=>`¥${Number(value).toFixed(2)}`, className:"amount", cell:item=>`<span class="amount ${dirClass[item.direction] || "neutral"}">¥${Number(item.amount || 0).toFixed(2)}</span>`},
+      direction: {key:"direction", label:"收支", value:item=>item.direction || ""},
+    };
+    const tableColumns = keys => keys.map(key => transactionColumns[key]);
+    const transactionTables = {
+      excluded: new TransactionTable({source:"excluded", table:"#excluded-table", body:"#excluded-list", toolbar:"#excluded-table-tools", empty:"#excluded-empty", onBatch:openBatchOrganize,
+        columns:[...tableColumns(["time","source","branch","counterparty","description","category","amount","direction"]),
+          {key:"reason", label:"原因", value:item=>item.exclude_reason || "手动设为不记录"},
+          {key:"actions", label:"操作", filterable:false, value:()=>"", cell:item=>`<button class="small" onclick="restoreExcluded(${item.id})">恢复到账单</button>`}]}),
+      drill: new TransactionTable({source:"drill", table:"#drill-table", body:"#drill-body", toolbar:"#drill-table-tools", empty:"#drill-empty", onBatch:openBatchOrganize,
+        columns:[...tableColumns(["time","source","counterparty","description","amount","direction"]),
+          {...transactionColumns.category, cell:item=>`<select data-tx-id="${item.id}" data-current-category="${esc(item.category || "其他")}" onchange="chooseCategory(this, ${item.id}, '${activeDrill === "ledger" ? "ledgerDrill" : "summaryDrill"}')">${categoryOptions(item.category)}</select>`},
+          {key:"actions", label:"操作", filterable:false, value:()=>"", cell:item=>`<button class="small" onclick="openTransactionLedgers(${item.id})">账本（${(item.ledger_ids || []).length}）</button>${transactionActionSelect(item.id, activeDrill === "ledger" ? "ledgerDrill" : "summaryDrill")}`}]}),
+      combined: new TransactionTable({source:"combined", table:"#combined-table", body:"#combined-details-body", toolbar:"#combined-table-tools", empty:"#combined-details-empty", onBatch:openBatchOrganize,
+        columns:[...tableColumns(["time","counterparty","category","branch","direction","amount"]),
+          {key:"amount_source", label:"金额来源", value:item=>item.amount_source || ""}]}),
+    };
     const detailTableTools = new TableTools("#detail-table", [
       { key: "time", label: "时间", type: "date", value: item => (item.transaction_time || "").slice(0, 10), sortValue: item => item.transaction_time },
       { key: "source", label: "来源", value: item => sourceName[item.source] || item.source },
@@ -3541,16 +3552,8 @@
         $("#combined-net-expense").textContent = `${data.net_expense < 0 ? "净收入" : "净支出"} ¥${Math.abs(Number(data.net_expense || 0)).toFixed(2)}`;
         $("#combined-meta").textContent = `支出 ¥${Number(data.expense || 0).toFixed(2)} · 收入 ¥${Number(data.income || 0).toFixed(2)} · 去重后 ${data.count} 笔`;
         $("#combined-details-title").textContent = `${month} · 综合明细`;
-        $("#combined-details-body").innerHTML = combinedReportItems.map((item) => `<tr>
-          <td class="mono">${dateTimeLines(item.transaction_time)}</td>
-          <td>${esc(item.counterparty || item.description || "交易")}</td>
-          <td>${esc(item.category || "其他")}</td>
-          <td><button class="small" onclick="openTransactionLedgers(${item.id})">账本（${(item.ledger_ids || []).length}）</button></td>
-          <td>${esc(item.direction)}</td>
-          <td class="amount ${dirClass[item.direction] || "neutral"}">¥${Number(item.amount || 0).toFixed(2)}</td>
-          <td>${esc(item.amount_source)}</td>
-        </tr>`).join("");
-        $("#combined-details-empty").classList.toggle("hidden", combinedReportItems.length > 0);
+        transactionTables.combined.setContext(`${month}|${selectedComboLedgers.join(",")}`);
+        transactionTables.combined.setRows(combinedReportItems);
       } catch (err) { showFlash(err.message, true); }
     }
     async function loadMonthlyLedgers(month) {
@@ -3654,22 +3657,8 @@
         const items = (data.items || []).filter((t) => !t.is_duplicate && reportAmounts.has(t.id))
           .map((t) => ({ ...t, amount: reportAmounts.get(t.id) }));
         drillItems = items;
-        $("#drill-body").innerHTML = items.map((t) => `
-          <tr>
-            <td class="mono">${dateTimeLines(t.transaction_time)}</td>
-            <td>${esc(sourceName[t.source] || t.source)}</td>
-            <td>${esc(t.counterparty || "—")}</td>
-            <td>${esc(t.description || "—")}</td>
-            <td class="amount ${dirClass[t.direction] || "neutral"}">¥${Number(t.amount || 0).toFixed(2)}</td>
-            <td>${esc(t.direction)}</td>
-            <td><select data-current-category="${esc(t.category || "其他")}" onchange="chooseCategory(this, ${t.id}, 'summaryDrill')">
-              ${categoryOptions(t.category)}
-            </select></td>
-            <td class="nowrap">
-              <button class="small" onclick="openTransactionLedgers(${t.id})">账本（${(t.ledger_ids || []).length}）</button>
-              ${transactionActionSelect(t.id, "summaryDrill")}
-            </td>
-          </tr>`).join("") || '<tr><td colspan="8" class="empty">该分类没有记录</td></tr>';
+        transactionTables.drill.setContext(`${activeDrill}|${drillMonth}|${drillCategory}|${drillDirection}`);
+        transactionTables.drill.setRows(items);
         $("#drill-modal").classList.remove("hidden");
       } catch (err) { showFlash(err.message, true); }
     }
