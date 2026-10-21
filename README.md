@@ -12,7 +12,7 @@ py -m pip install -r requirements.txt
 py run.py
 ```
 
-启动后会自动弹出本地窗口；如果本机没有安装 `pywebview`，会改用系统默认浏览器打开。
+启动后会自动弹出 PySide6 桌面窗口。也可运行 `py app.py` 使用浏览器模式。
 
 ## 打包成单个 exe
 
@@ -96,4 +96,11 @@ API 管理交互参考了 [Open WebUI 的连接管理与密钥显隐](https://gi
 
 - `app.py`、`run.py`、`templates/`：程序源码。
 - `packaging/`：PyInstaller 打包配置。
-- `output/`：打包生成文件和本地截图；不会提交到 Git。
+- `output/dist/每笔有数.exe`：当前保留的桌面程序；不会提交到 Git。
+- `output/build/`：可重新生成的打包缓存。
+
+## 运行测试
+
+```powershell
+py -B -m unittest discover -s tests -v
+```
