@@ -48,6 +48,7 @@ CHECKS = r"""
     document.querySelector('#filter-branch').value = '__all__';
     await loadDetail();
     assert(detailState.items.length === 6, 'all six source transactions loaded');
+    assert(document.querySelector('#btn-detail-batch').disabled, 'total bill batch action requires a selection');
     header('#detail-table','amount').click();
     menu().querySelector('[data-sort="asc"]').click();
     equal(rawAmounts(), [2,5,10,30,50,100], 'numeric ascending');
@@ -56,6 +57,10 @@ CHECKS = r"""
     equal(rawAmounts(), [100,50,30,10,5,2], 'numeric descending');
     document.querySelector('#check-all').click();
     assert(detailState.selected.size === 6, 'select visible rows');
+    assert(!document.querySelector('#btn-detail-batch').disabled, 'total bill toolbar action enabled');
+    document.querySelector('#btn-detail-batch').click();
+    assert(batchOrganizeContext.ids.length === 6, 'total bill toolbar includes selected source rows');
+    document.querySelector('#btn-batch-organize-close').click();
     header('#detail-table','category').click(); search('学习'); apply();
     equal(rawAmounts(), [30,10], 'category search filter');
     assert(detailState.selected.size === 2, 'hidden selections cleared');
@@ -188,9 +193,9 @@ CHECKS = r"""
     assert(document.querySelector(`[data-display-id="${otherGroup.dataset.displayId}"]`) === otherGroup, 'single edit preserves unaffected DOM');
     scroll.style.maxHeight = '';
 
-    switchPage('detail'); document.querySelector('#filter-branch').value='__all__'; await loadDetail();
+    switchPage('detail'); document.querySelector('#filter-branch').value='生活'; await loadDetail();
     for (const id of [3,4]) document.querySelector(`#detail-body .tx-check[value="${id}"]`).click();
-    document.querySelector('#btn-batch-organize').click();
+    document.querySelector('#btn-detail-batch').click();
     document.querySelector('#batch-organize-category').value='购物';
     document.querySelector('#batch-organize-mode').value='replace';
     document.querySelector('#batch-organize-mode').dispatchEvent(new Event('change'));
@@ -198,6 +203,9 @@ CHECKS = r"""
     document.querySelector('#btn-batch-organize-save').click();
     await until(()=>document.querySelector('#batch-organize-modal').classList.contains('hidden'),'main detail batch saved');
     for (const id of [3,4]) equal((await api(`/api/transactions/${id}/ledgers`)).ledger_ids, [target], 'replace membership from main detail');
+    await loadDetail();
+    assert(detailState.items.every(item=>![3,4].includes(item.id)), 'total bill reflects removed main memberships');
+    assert(document.querySelector('#btn-detail-batch').disabled, 'batch selection resets after applying');
     console.log('PASS: batch group/member selection, category and ledger changes, stable row refresh');
     window.__tableCheck = {done:true, success:true};
   } catch (error) {

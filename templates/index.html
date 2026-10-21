@@ -781,7 +781,7 @@
     <section id="page-detail" class="page">
       <div class="panel">
         <h2>查找交易</h2>
-        <p class="section-lead">按时间、账本、来源或分类筛选；每笔交易可修改分类和所属账本。</p>
+        <p class="section-lead">按时间、账本、来源或分类筛选；勾选交易后，可批量设置分类和所属账本。</p>
         <div class="detail-filter-primary">
           <input type="text" id="filter-keyword" placeholder="搜索交易对方、说明或备注">
           <select id="filter-month"><option value="">全部月份</option></select>
@@ -809,6 +809,8 @@
         </div>
         <div class="detail-tools">
           <span class="detail-tools-label">明细工具</span>
+          <button id="btn-detail-batch" class="primary" disabled>批量设置分类/账本</button>
+          <span id="detail-selected-count" class="small">勾选交易后可批量设置</span>
           <button id="btn-choose-columns">选择列</button>
           <button id="btn-detail-new-ledger">新建账本</button>
           <button id="btn-manual-merge" class="danger">合并选中（2 条）</button>
@@ -1384,7 +1386,7 @@
     <div class="selection-info">已选择 <strong id="selection-count">0</strong> 条</div>
     <div class="row">
       <button id="btn-batch-category">批量分类</button>
-      <button id="btn-batch-organize">分类/账本</button>
+      <button id="btn-batch-organize">批量设置分类/账本</button>
       <button class="danger" id="btn-batch-delete">批量删除</button>
       <button id="btn-selection-clear">取消选择</button>
     </div>
@@ -3064,7 +3066,9 @@
       const ids = source === "ledger" ? selectedLedgerSourceIds() : [...detailState.selected];
       if (!ids.length || ids.length > 5000) { showFlash("请选择 1 至 5000 笔原始交易", true); return; }
       batchOrganizeContext = { source, ids };
-      $("#batch-organize-count").textContent = `将统一设置 ${ids.length} 笔原始交易；选中的整组会包含组内全部流水。`;
+      $("#batch-organize-count").textContent = source === "ledger"
+        ? `将统一设置 ${ids.length} 笔原始交易；选中的整组会包含组内全部流水。`
+        : `将统一设置总账单中选中的 ${ids.length} 笔原始交易。`;
       $("#batch-organize-category").innerHTML = '<option value="">不修改分类</option>' + allCategories.map(category =>
         `<option value="${esc(category)}">${esc(category)}</option>`).join("");
       $("#batch-organize-mode").value = "keep";
@@ -3088,6 +3092,7 @@
       }[mode];
     }
     $("#btn-ledger-batch").addEventListener("click", () => openBatchOrganize("ledger"));
+    $("#btn-detail-batch").addEventListener("click", () => openBatchOrganize("detail"));
     $("#btn-batch-organize").addEventListener("click", () => openBatchOrganize("detail"));
     $("#batch-organize-mode").addEventListener("change", updateBatchOrganizeMode);
     $("#btn-batch-organize-close").addEventListener("click", () => $("#batch-organize-modal").classList.add("hidden"));
@@ -3336,6 +3341,8 @@
       const count = detailState.selected.size;
       $("#selection-count").textContent = count;
       $("#detail-actions").classList.toggle("hidden", count === 0);
+      $("#btn-detail-batch").disabled = count === 0;
+      $("#detail-selected-count").textContent = count ? `已选 ${count} 笔交易` : "勾选交易后可批量设置";
     }
     function applyColumnVisibility() {
       $$("#detail-table th[data-col]").forEach((el) => {
