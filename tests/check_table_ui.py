@@ -335,6 +335,47 @@ CHECKS = r"""
       ledgerDisplayItems.some(item=>item.group_id===august && item.title==='八月工资'),'outer split keeps original named groups');
     assert((await api('/api/transactions')).items.length===6,'nested operations preserve source transactions');
     console.log('PASS: nested salary grouping, single-entry child, rename, recursive checkbox selection and layer-only split');
+
+    nodeCheck('g-1').click(); nodeCheck('g-2').click(); nodeCheck(`g-${august}`).click();
+    const anta=await createNestedUI('anta支出');
+    openLedgerGroupName(1); document.querySelector('#ledger-group-name').value='anta打车';
+    document.querySelector('#btn-ledger-group-name-save').click();
+    await until(()=>ledgerNodeMap().get('g-1')?.title==='anta打车','target named before editing members');
+    const originalNet=ledgerDisplayItems.reduce((sum,item)=>sum+item.amount*(item.direction==='收入'?1:-1),0);
+    const addButton=id=>groupDetails(id).parentElement.querySelector(':scope > .ledger-group-buttons .ledger-group-add');
+    const moveCheck=id=>document.querySelector(`#ledger-move-items input[value="${id}"]`);
+    const saveMove=async(condition,label)=>{
+      assert(!document.querySelector('#btn-ledger-move-save').disabled,'move action enabled');
+      document.querySelector('#btn-ledger-move-save').click();
+      await until(()=>document.querySelector('#ledger-move-modal').classList.contains('hidden') && condition(),label);
+    };
+    addButton(1).click();
+    assert(!document.querySelector('#ledger-move-modal').classList.contains('hidden'),'child add button opens existing group editor');
+    assert(document.querySelector('#ledger-move-target').value==='1','child add targets the existing group');
+    assert(!moveCheck(1) && !moveCheck(2) && !moveCheck(`g-${anta}`),'existing members and ancestor cannot be added again');
+    moveCheck(5).click();
+    const moveSearch=document.querySelector('#ledger-move-search'); moveSearch.value='不存在'; moveSearch.dispatchEvent(new Event('input'));
+    assert(ledgerMoveDraft.selected.has('5') && document.querySelector('#ledger-move-count').textContent.includes('1 笔'),'picker search keeps explicit selection count');
+    document.querySelector('#btn-ledger-move-close').click();
+    assert(ledgerNodeMap().get('5').parent_group_id===2,'cancel does not change existing memberships');
+    addButton(1).click(); moveCheck(5).click();
+    await saveMove(()=>ledgerNodeMap().get('5')?.parent_group_id===1,'sibling raw entry moved without splitting');
+    assert(ledgerNodeMap().get('g-1').title==='anta打车' && ledgerNodeMap().get('g-1').parent_group_id===anta,'target identity title and parent retained');
+    equal(ledgerNodeMap().get('g-2').members.map(item=>item.id),[6],'source sibling retains remaining members');
+    assert(ledgerNodeMap().get(`g-${anta}`).members.length===5,'moving within parent does not duplicate its members');
+    nodeCheck(4).click(); document.querySelector('#btn-ledger-move').click();
+    const targetSelect=document.querySelector('#ledger-move-target'); targetSelect.value='1'; targetSelect.dispatchEvent(new Event('change'));
+    assert(moveCheck(4).checked,'toolbar carries selected raw entry into target picker');
+    await saveMove(()=>ledgerNodeMap().get('4')?.parent_group_id===1,'external entry moves directly into child');
+    assert(ledgerNodeMap().get(`g-${anta}`).members.length===6 && ledgerDisplayItems.length===1,'adding external entry updates ancestors without adding a wrapper');
+    addButton(1).click(); moveCheck(`g-${august}`).click();
+    assert(moveCheck(3).checked && moveCheck(3).disabled,'selecting a whole group includes leaves exactly once');
+    await saveMove(()=>ledgerNodeMap().get(`g-${august}`)?.parent_group_id===1,'existing subgroup moves intact into another subgroup');
+    assert(ledgerNodeMap().get(`g-${august}`).title==='八月工资' && ledgerNodeMap().get('3').parent_group_id===august,'moved group keeps name and contents');
+    assert(groupDetails(anta).open && groupDetails(1).open,'target and ancestors remain expanded');
+    assert(ledgerDisplayItems.reduce((sum,item)=>sum+item.amount*(item.direction==='收入'?1:-1),0)===originalNet,'moving existing members preserves net amount');
+    assert((await api('/api/transactions')).items.length===6,'moving entries preserves original source rows');
+    console.log('PASS: add to existing child directly, sibling and external entry moves, toolbar selection, cancel, search and intact subgroup moves');
     window.__tableCheck = {done:true, success:true};
   } catch (error) {
     console.error(error.stack);

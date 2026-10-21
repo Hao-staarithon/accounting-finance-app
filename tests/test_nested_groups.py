@@ -59,6 +59,130 @@ class NestedGroupTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def move(self, target, items, ledger=None):
+        response = self.client.post(f"/api/ledgers/{ledger or self.ledger}/display-groups/{target}/items",
+                                    json={"item_ids": items})
+        self.assertEqual(response.status_code, 200, response.get_json())
+        return response.get_json()
+
+    def test_add_sibling_raw_entry_to_existing_child_without_splitting(self):
+        a, b, c, d = [self.add() for _ in range(4)]
+        outer = self.create([a, b, c, d], "anta支出")
+        target = self.create([a, b], "anta打车", outer)
+        sibling = self.create([d], "anta体检", outer)
+        source = self.snapshot()["transactions"]
+        self.move(target, [c])
+        root = self.display()["items"][0]
+        self.assertEqual((root["group_id"], root["title"], root["amount"]), (outer, "anta支出", 6000))
+        self.assertEqual([(item["group_id"], item["title"], len(item["members"])) for item in root["children"]],
+                         [(target, "anta打车", 3), (sibling, "anta体检", 1)])
+        self.assertEqual(self.snapshot()["transactions"], source)
+
+    def test_add_external_entry_updates_all_ancestors_and_shared_ledgers(self):
+        a, b, c = [self.add() for _ in range(3)]
+        outer = self.create([a, b], "anta支出")
+        target = self.create([a], "anta打车", outer)
+        other = self.client.post("/api/ledgers", json={"name": "共享账本"}).get_json()["item"]["id"]
+        self.assertEqual(self.client.post(f"/api/transactions/{c}/ledgers", json={
+            "ledger_ids": [self.ledger, other],
+        }).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/transactions/{c}/ledger-amount", json={
+            "ledger_id": other, "amount": "500",
+        }).status_code, 200)
+        result = self.move(target, [c])
+        self.assertEqual(result["ancestor_group_ids"], [target, outer])
+        self.assertEqual(next(item for item in result["affected_ledgers"] if item["id"] == other)["added"], 2)
+        for ledger, amount in ((self.ledger, 4500), (other, 3500)):
+            root = self.display(ledger)["items"][0]
+            self.assertEqual((root["group_id"], root["amount"], len(root["members"])), (outer, amount, 3))
+            nested = next(item for item in root["children"] if item["type"] == "group")
+            self.assertEqual((nested["group_id"], len(nested["members"])), (target, 2))
+
+    def test_move_entire_group_retains_descendants_and_removes_empty_source(self):
+        a, b, c, d = [self.add() for _ in range(4)]
+        destination = self.create([a, b], "anta打车")
+        source = self.create([c, d], "临时外层")
+        inner = self.create([c, d], "七月打车", source)
+        deeper = self.create([c], "第一周", inner)
+        result = self.move(destination, [f"g-{inner}"])
+        self.assertEqual(result["removed_empty_group_ids"], [source])
+        root = self.display()["items"][0]
+        nested = next(item for item in root["children"] if item["type"] == "group")
+        self.assertEqual((root["group_id"], root["title"], root["amount"]), (destination, "anta打车", 6000))
+        self.assertEqual((nested["group_id"], nested["title"], nested["parent_group_id"]),
+                         (inner, "七月打车", destination))
+        self.assertEqual(nested["children"][0]["group_id"], deeper)
+        bill_app.init_db()
+        self.assertEqual(self.display()["items"][0], root)
+
+    def test_move_multiple_levels_keeps_net_and_no_orphans(self):
+        a, b, c, d, e = [self.add() for _ in range(5)]
+        destination = self.create([a, b], "目标")
+        source = self.create([c, d], "移空后删除")
+        child = self.create([c], "原子组合", source)
+        self.move(destination, [f"g-{child}", d, e])
+        root = self.display()["items"][0]
+        self.assertEqual((root["amount"], len(root["members"])), (7500, 5))
+        self.assertEqual(self.display()["net"], 7500)
+        group_rows = self.snapshot()["ledger_display_groups"]
+        self.assertEqual({row[0] for row in group_rows}, {destination, child})
+        self.assertEqual(next(item for item in root["children"] if item["type"] == "group")["group_id"], child)
+
+    def test_invalid_moves_rollback_groups_and_memberships(self):
+        a, b, c, d = [self.add() for _ in range(4)]
+        outer = self.create([a, b, c], "外层")
+        child = self.create([a, b], "子组合", outer)
+        before = self.snapshot()
+        invalid = [
+            (child, [f"g-{child}"]), (child, [f"g-{outer}"]),
+            (child, [a]), (child, [c, c]), (child, [99999]),
+            (child, [f"g-{outer}", a]), (outer, [f"g-{child}", a]),
+            (99999, [d]), (child, [True]), (child, ["g-99999"]),
+        ]
+        for target, items in invalid:
+            with self.subTest(target=target, items=items):
+                response = self.client.post(f"/api/ledgers/{self.ledger}/display-groups/{target}/items", json={"item_ids": items})
+                self.assertIn(response.status_code, (400, 404, 409), response.get_json())
+                self.assertEqual(self.snapshot(), before)
+
+    def test_move_rejects_unavailable_target_and_excluded_source(self):
+        a, b, c = [self.add() for _ in range(3)]
+        target = self.create([a, b])
+        self.client.post(f"/api/transactions/{c}/count", json={"count_in_expense": False})
+        before = self.snapshot()
+        response = self.client.post(f"/api/ledgers/{self.ledger}/display-groups/{target}/items", json={"item_ids": [c]})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.snapshot(), before)
+        other = self.client.post("/api/ledgers", json={"name": "无成员账本"}).get_json()["item"]["id"]
+        self.client.post(f"/api/transactions/{c}/count", json={"count_in_expense": True})
+        self.client.post(f"/api/transactions/{c}/ledgers", json={"ledger_ids": [other]})
+        before = self.snapshot()
+        response = self.client.post(f"/api/ledgers/{other}/display-groups/{target}/items", json={"item_ids": [c]})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_move_checks_ancestor_capacity_before_adding_ledger_memberships(self):
+        ids = [self.add("1") for _ in range(201)]
+        outer = self.create(ids[:200])
+        child = self.create([ids[0]], "可添加但外层已满", outer)
+        before = self.snapshot()
+        response = self.client.post(f"/api/ledgers/{self.ledger}/display-groups/{child}/items", json={"item_ids": [ids[-1]]})
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("200", response.get_json()["error"])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_move_checks_depth_of_moved_subtree(self):
+        a, b, c, d = [self.add() for _ in range(4)]
+        parent = self.create([a, b])
+        for _ in range(bill_app.MAX_DISPLAY_GROUP_DEPTH - 1):
+            parent = self.create([a], parent=parent)
+        moving = self.create([c, d], "不能成为第33层")
+        before = self.snapshot()
+        response = self.client.post(f"/api/ledgers/{self.ledger}/display-groups/{parent}/items", json={"item_ids": [f"g-{moving}"]})
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("32", response.get_json()["error"])
+        self.assertEqual(self.snapshot(), before)
+
     def test_salary_subgroups_and_single_entry_keep_totals_and_source_keys(self):
         ids = [self.add(), self.add("1900", "支出"), self.add("3500"), self.add()]
         before = self.snapshot()["transactions"]

@@ -23,6 +23,12 @@
 .table-column-menu .menu-empty, .table-column-menu .menu-count { color: var(--muted); font-size: 12px; padding: 6px 0; }
 .table-column-menu .menu-error { color: #b91c1c; font-size: 12px; margin-top: 8px; }
 .ledger-group-rename { order: 1; flex: 0 0 auto; }
+.ledger-group-buttons { order: 1; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: 0 0 auto; max-width: 180px; }
+.ledger-move-items { max-height: 310px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; margin-top: 10px; padding: 8px; }
+.ledger-move-option { display: flex; align-items: flex-start; gap: 8px; padding: 8px; border-radius: 6px; cursor: pointer; }
+.ledger-move-option:hover { background: #f1f5f9; }
+.ledger-move-option input { flex: 0 0 auto; margin-top: 3px; }
+.ledger-move-option span { min-width: 0; overflow-wrap: anywhere; }
 .ledger-child-group { display: flex; align-items: flex-start; gap: 8px; }
 .ledger-child-group > input { flex: 0 0 auto; margin-top: 10px; }
 .ledger-child-group > .ledger-group-main { flex: 1; min-width: 260px; }
