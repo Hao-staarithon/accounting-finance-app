@@ -1,0 +1,25 @@
+.column-menu-button { display: inline-flex; align-items: center; gap: 7px; border: 0; padding: 3px 2px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.column-menu-button:hover { color: var(--brand); background: transparent; }
+.column-menu-button.is-active { color: var(--brand); }
+.column-menu-indicator { font-size: 11px; color: #8995a8; }
+.column-menu-button.is-active .column-menu-indicator { color: var(--brand); }
+.table-view-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; color: var(--muted); font-size: 12px; }
+.table-column-menu { position: fixed; z-index: 250; box-sizing: border-box; width: 300px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: white; box-shadow: 0 12px 40px rgba(24,36,58,.2); color: var(--text); font-size: 13px; }
+.table-column-menu .menu-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
+.table-column-menu .menu-title strong { overflow-wrap: anywhere; }
+.table-column-menu .menu-sort { display: flex; gap: 6px; margin-bottom: 8px; }
+.table-column-menu .menu-sort button { flex: 1; padding: 7px; }
+.table-column-menu .menu-clear { width: 100%; margin-bottom: 12px; }
+.table-column-menu input[type="search"] { box-sizing: border-box; width: 100%; margin-bottom: 8px; }
+.table-column-menu .menu-values { max-height: 200px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; margin-top: 6px; }
+.table-column-menu .menu-option { display: flex; align-items: center; gap: 8px; padding: 7px 9px; cursor: pointer; }
+.table-column-menu .menu-option:hover { background: #f2f5fb; }
+.table-column-menu .menu-option span { overflow-wrap: anywhere; min-width: 0; }
+.table-column-menu .menu-option input { margin: 0; flex: 0 0 auto; }
+.table-column-menu .menu-range { display: flex; gap: 8px; margin: 10px 0; }
+.table-column-menu .menu-range label { width: calc(50% - 4px); color: var(--muted); font-size: 12px; }
+.table-column-menu .menu-range input { box-sizing: border-box; display: block; width: 100%; min-width: 0; margin-top: 4px; padding: 7px 6px; }
+.table-column-menu .menu-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.table-column-menu .menu-empty, .table-column-menu .menu-count { color: var(--muted); font-size: 12px; padding: 6px 0; }
+.table-column-menu .menu-error { color: #b91c1c; font-size: 12px; margin-top: 8px; }
+.ledger-group-rename { order: 1; flex: 0 0 auto; }

@@ -1,0 +1,209 @@
+"""Run the table interactions in Qt WebEngine against an isolated test database.
+
+Usage: python -B tests/check_table_ui.py
+"""
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import threading
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
+os.environ.setdefault("QT_QUICK_BACKEND", "software")
+os.environ.setdefault("QT_OPENGL", "software")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from PySide6.QtCore import QEventLoop, QTimer, QUrl
+from PySide6.QtWebEngineCore import QWebEnginePage
+from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWidgets import QApplication
+from werkzeug.serving import make_server
+
+import app as bill_app
+
+
+CHECKS = r"""
+(async () => {
+  const assert = (ok, message) => { if (!ok) throw new Error(message); };
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const until = async (condition, label) => {
+    for (let i = 0; i < 100; i++) { if (condition()) return; await sleep(50); }
+    throw new Error('Timeout: ' + label);
+  };
+  const menu = () => document.querySelector('.table-column-menu');
+  const header = (table, col) => document.querySelector(`${table} th[data-col="${col}"] button`);
+  const apply = () => menu().querySelector('.menu-footer .primary').click();
+  const search = text => {
+    const input = menu().querySelector('input[type="search"]');
+    input.value = text; input.dispatchEvent(new Event('input', {bubbles:true}));
+  };
+  const rawAmounts = () => [...document.querySelectorAll('#detail-body td[data-col="amount"]')].map(td => Number(td.textContent.replace('¥','')));
+  const groupAmounts = () => [...document.querySelectorAll('#ledger-display-body > tr > td:last-child')].map(td => Number(td.textContent.trim().replace('¥','').replace('已调整','')));
+  const equal = (a,b,label) => assert(JSON.stringify(a) === JSON.stringify(b), `${label}: ${JSON.stringify(a)}`);
+  try {
+    await until(() => allLedgers.length > 0 && document.querySelector('#page-summary').classList.contains('active'), 'initialization');
+    switchPage('detail');
+    document.querySelector('#filter-branch').value = '__all__';
+    await loadDetail();
+    assert(detailState.items.length === 6, 'all six source transactions loaded');
+    header('#detail-table','amount').click();
+    menu().querySelector('[data-sort="asc"]').click();
+    equal(rawAmounts(), [2,5,10,30,50,100], 'numeric ascending');
+    header('#detail-table','amount').click();
+    menu().querySelector('[data-sort="desc"]').click();
+    equal(rawAmounts(), [100,50,30,10,5,2], 'numeric descending');
+    document.querySelector('#check-all').click();
+    assert(detailState.selected.size === 6, 'select visible rows');
+    header('#detail-table','category').click(); search('学习'); apply();
+    equal(rawAmounts(), [30,10], 'category search filter');
+    assert(detailState.selected.size === 2, 'hidden selections cleared');
+    header('#detail-table','counterparty').click(); search('不存在'); apply();
+    assert(document.querySelectorAll('#detail-body tr').length === 0, 'no matching rows');
+    assert(detailState.selected.size === 0, 'no hidden batch selection');
+    assert(!document.querySelector('#check-all').checked, 'empty select all unchecked');
+    document.querySelector('#btn-detail-table-reset').click();
+    header('#detail-table','category').click();
+    menu().querySelector('[data-select-all]').click();
+    [...menu().querySelectorAll('.menu-values input')].find(input => input.value === '吃饭').click();
+    apply();
+    equal(rawAmounts().slice().sort((a,b)=>a-b), [2,50], 'checkbox value filter');
+    document.querySelector('#btn-detail-table-reset').click();
+    header('#detail-table','category').click();
+    menu().querySelector('[data-select-all]').click();
+    menu().querySelector('.menu-footer button').click();
+    assert(rawAmounts().length === 6, 'cancel preserves existing view');
+    header('#detail-table','time').click();
+    menu().querySelector('[data-range="min"]').value = '2026-10-02';
+    menu().querySelector('[data-range="max"]').value = '2026-10-04'; apply();
+    assert(rawAmounts().length === 3, 'inclusive date range');
+    header('#detail-table','amount').click();
+    menu().querySelector('[data-range="min"]').value = '20';
+    menu().querySelector('[data-range="max"]').value = '100'; apply();
+    assert(rawAmounts().length === 2, 'numeric and date range intersect');
+    header('#detail-table','category').click(); search('购物'); apply();
+    equal(rawAmounts(), [100], 'three columns intersect');
+    document.querySelector('#btn-detail-table-reset').click();
+    header('#detail-table','amount').click();
+    menu().querySelector('[data-range="min"]').value = '100';
+    menu().querySelector('[data-range="max"]').value = '1'; apply();
+    assert(menu().querySelector('.menu-error').textContent.length > 0, 'invalid range explained');
+    document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true}));
+    assert(!menu(), 'Escape closes column menu');
+    console.log('PASS: main table sorting, search, range filters and visible selection');
+
+    openLedger('界面验证账本'); await loadLedgerStats(); openLedgerDisplayModal();
+    header('.ledger-display-table','amount').click(); menu().querySelector('[data-sort="asc"]').click();
+    equal(groupAmounts(), [5,12,30,50,100], 'ledger numeric sorting with group');
+    document.querySelectorAll('.ledger-row-check').forEach(input => input.click());
+    header('.ledger-display-table','category').click(); search('学习'); apply();
+    assert(document.querySelectorAll('#ledger-display-body > tr').length === 2, 'group matches member category');
+    assert(ledgerSelectedIds.size === 2, 'hidden ledger selections cleared');
+    document.querySelector('#btn-ledger-clear-filter').click();
+    document.querySelector('.ledger-group-rename').click();
+    const rename = document.querySelector('#ledger-group-name-modal');
+    assert(!rename.classList.contains('hidden'), 'rename dialog opens');
+    assert(Number(getComputedStyle(rename).zIndex) > Number(getComputedStyle(document.querySelector('#ledger-display-modal')).zIndex), 'rename dialog above ledger');
+    const title = '考研 <资料> & "交通"';
+    document.querySelector('#ledger-group-name').value = title;
+    document.querySelector('#btn-ledger-group-name-save').click();
+    await until(() => ledgerDisplayItems.some(item => item.title === title), 'renamed group refreshed');
+    assert(document.querySelector('.ledger-group-main summary').textContent.includes(title), 'name renders as plain text');
+    assert(!document.querySelector('.ledger-group-main summary 资料'), 'name is escaped');
+    header('.ledger-display-table','amount').click();
+    const rect = menu().getBoundingClientRect();
+    assert(rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight, 'menu inside viewport');
+    document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true}));
+    header('.ledger-display-table','amount').click();
+    menu().querySelector('[data-range="min"]').value = '20'; apply();
+    assert(document.querySelectorAll('#ledger-display-body > tr').length === 3, 'ledger amount range');
+    document.querySelector('#btn-ledger-clear-filter').click();
+    const checks = [...document.querySelectorAll('.ledger-row-check')].filter(input => !input.value.startsWith('g-')).slice(0,2);
+    checks.forEach(input => input.click());
+    document.querySelector('#btn-ledger-group').click();
+    assert(!document.querySelector('#ledger-group-modal').classList.contains('hidden'), 'create named group dialog');
+    document.querySelector('#ledger-group-title').value = '考研新增组合';
+    document.querySelector('#btn-ledger-group-save').click();
+    await until(() => ledgerDisplayItems.some(item => item.title === '考研新增组合'), 'new named group saved');
+    console.log('PASS: ledger filters, group member categories, rename and named creation');
+    window.__tableCheck = {done:true, success:true};
+  } catch (error) {
+    console.error(error.stack);
+    window.__tableCheck = {done:true, success:false, error:String(error.stack)};
+  }
+})();
+"""
+
+
+class TestPage(QWebEnginePage):
+    def javaScriptConsoleMessage(self, level, message, line, source):
+        if message.startswith("PASS:") or level == QWebEnginePage.JavaScriptConsoleMessageLevel.ErrorMessageLevel:
+            print(message, flush=True)
+
+
+def main():
+    qt = QApplication([])
+    with tempfile.TemporaryDirectory(prefix="eachbill-ui-") as sandbox:
+        bill_app.DB_PATH = str(Path(sandbox) / "test.db")
+        bill_app.init_db()
+        client = bill_app.app.test_client()
+        ledger_id = client.post("/api/ledgers", json={"name": "界面验证账本", "include_in_summary": True}).get_json()["item"]["id"]
+        for index, (name, amount, category) in enumerate([
+            ("咖啡店", 2, "吃饭"), ("书店", 10, "学习"), ("网店", 100, "购物"),
+            ("书店", 30, "学习"), ("退款", 5, "购物"), ("餐厅", 50, "吃饭"),
+        ], 1):
+            response = client.post("/api/manual/add", json={
+                "branch": "界面验证账本", "amount": str(amount), "direction": "收入" if name == "退款" else "支出",
+                "category": category, "counterparty": name, "transaction_time": f"2026-10-{index:02d} 12:00:00",
+            })
+            assert response.status_code == 200, response.get_json()
+        response = client.post(f"/api/ledgers/{ledger_id}/display-groups", json={"tx_ids": [1, 2]})
+        assert response.status_code == 200
+        server = make_server("127.0.0.1", 0, bill_app.app, threaded=True)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        web = QWebEngineView()
+        web.setPage(TestPage(web))
+        web.resize(1400, 900)
+        web.show()
+        loop = QEventLoop()
+        result = {}
+
+        def receive(value):
+            if not value:
+                return
+            state = json.loads(value)
+            if state.get("done"):
+                result.update(state)
+                loop.quit()
+
+        timer = QTimer()
+        timer.timeout.connect(lambda: web.page().runJavaScript(
+            "JSON.stringify(window.__tableCheck || {})", receive
+        ))
+        timer.start(100)
+        watchdog = QTimer()
+        watchdog.setSingleShot(True)
+        watchdog.timeout.connect(loop.quit)
+        watchdog.start(45000)
+        web.loadFinished.connect(lambda ok: web.page().runJavaScript(CHECKS) if ok else loop.quit())
+        web.setUrl(QUrl(f"http://127.0.0.1:{server.server_port}"))
+        loop.exec()
+        timer.stop()
+        watchdog.stop()
+        web.close()
+        web.page().deleteLater()
+        web.deleteLater()
+        qt.processEvents()
+        server.shutdown()
+        assert result.get("success"), result.get("error", "UI check timed out")
+        conn = bill_app.get_db()
+        try:
+            assert conn.execute("SELECT count(*) FROM transactions").fetchone()[0] == 6
+        finally:
+            conn.close()
+    print("UI checks passed; source transactions preserved.", flush=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -125,6 +125,41 @@ class LedgerDisplayTests(unittest.TestCase):
         self.assertEqual(len(self.display()["items"]), 1)
         self.assertEqual(self.display()["items"][0]["type"], "transaction")
 
+    def test_existing_group_can_be_renamed_and_reset_without_changing_transactions(self):
+        self.import_statement()
+        original = self.source_rows()
+        created = self.client.post(
+            f"/api/ledgers/{self.ledger_id}/display-groups",
+            json={"tx_ids": [row["id"] for row in original]},
+        ).get_json()
+        group_id = created["group_id"]
+        endpoint = f"/api/ledger-display-groups/{group_id}"
+        before = self.display()
+        response = self.client.patch(endpoint, json={"title": "  考研资料及退款  "})
+        self.assertEqual(response.status_code, 200)
+        display = self.display()
+        self.assertEqual(display["items"][0]["title"], "考研资料及退款")
+        self.assertEqual(display["items"][0]["group_id"], group_id)
+        self.assertEqual(display["items"][0]["members"], before["items"][0]["members"])
+        self.assertEqual(display["expense"], before["expense"])
+        self.assertEqual(self.source_rows(), original)
+        self.assertEqual(self.client.patch(endpoint, json={"title": ""}).status_code, 200)
+        self.assertEqual(self.display()["items"][0]["title"], "交易组合（2 笔）")
+        self.assertEqual(self.import_statement()["skipped"], 2)
+
+    def test_invalid_group_name_does_not_overwrite_saved_name(self):
+        self.import_statement()
+        group_id = self.client.post(
+            f"/api/ledgers/{self.ledger_id}/display-groups",
+            json={"tx_ids": [row["id"] for row in self.source_rows()], "title": "原名称"},
+        ).get_json()["group_id"]
+        endpoint = f"/api/ledger-display-groups/{group_id}"
+        for payload in ({}, {"title": None}, {"title": ["错误"]}, {"title": "字" * 81}, []):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.client.patch(endpoint, json=payload).status_code, 400)
+                self.assertEqual(self.display()["items"][0]["title"], "原名称")
+        self.assertEqual(self.client.patch("/api/ledger-display-groups/99999", json={"title": "名称"}).status_code, 404)
+
     def test_three_mixed_transactions_net_and_reimport(self):
         self.statement = (
             "Date,Amount,Description\n"

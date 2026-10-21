@@ -290,6 +290,13 @@ class MultiLedgerTests(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 200, response.get_json())
         group_id = response.get_json()["group_id"]
+        self.assertEqual(self.client.patch(f"/api/ledger-display-groups/{group_id}", json={
+            "title": "实习支出减报销",
+        }).status_code, 200)
+        for ledger_id in (self.dy, self.work):
+            shared = self.client.get(f"/api/ledgers/{ledger_id}/display").get_json()["items"][0]
+            self.assertEqual(shared["title"], "实习支出减报销")
+            self.assertEqual(shared["group_id"], group_id)
         self.assertEqual(response.get_json()["affected_ledgers"], [
             {"id": self.dy, "name": "dy", "added": 0},
             {"id": self.work, "name": "长期投入", "added": 1},

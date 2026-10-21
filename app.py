@@ -2531,6 +2531,27 @@ def api_create_ledger_display_group(ledger_id: int):
         conn.close()
 
 
+@app.patch("/api/ledger-display-groups/<int:group_id>")
+def api_rename_ledger_display_group(group_id: int):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("title"), str):
+        return api_error("请填写组合名称")
+    title = data["title"].strip()
+    if len(title) > 80:
+        return api_error("组合名称最多 80 个字")
+    conn = get_db()
+    try:
+        updated = conn.execute(
+            "UPDATE ledger_display_groups SET title=? WHERE id=?", (title, group_id)
+        )
+        if not updated.rowcount:
+            return api_error("展示组合不存在", 404)
+        conn.commit()
+        return jsonify({"ok": True, "group_id": group_id, "title": title})
+    finally:
+        conn.close()
+
+
 @app.delete("/api/ledger-display-groups/<int:group_id>")
 def api_delete_ledger_display_group(group_id: int):
     conn = get_db()
