@@ -6,7 +6,7 @@
   })[char]);
 
   class TransactionTable {
-    constructor({source, table, body, toolbar, empty, columns, onBatch}) {
+    constructor({source, table, body, toolbar, empty, columns, onBatch, onDelete}) {
       this.source = source;
       this.table = document.querySelector(table);
       this.body = document.querySelector(body);
@@ -20,7 +20,7 @@
       this.table.dataset.transactionTable = source;
       this.table.tHead.innerHTML = `<tr><th><input type="checkbox" class="table-select-all" aria-label="全选当前筛选结果"></th>${columns.map(column => `<th data-col="${column.key}">${escape(column.label)}</th>`).join("")}</tr>`;
       this.toolbar.classList.add("transaction-table-toolbar");
-      this.toolbar.innerHTML = '<span class="small" data-table-status aria-live="polite"></span><div class="row"><button data-table-reset class="small hidden">清除筛选和排序</button><button data-table-batch class="primary" disabled>批量设置分类/账本</button></div>';
+      this.toolbar.innerHTML = '<span class="small" data-table-status aria-live="polite"></span><div class="row"><button data-table-reset class="small hidden">清除筛选和排序</button><button data-table-delete class="danger" disabled>删除选中</button><button data-table-batch class="primary" disabled>批量设置分类/账本</button></div>';
       this.tools = new TableTools(table, columns.filter(column => column.filterable !== false), () => this.render());
       this.all = this.table.querySelector(".table-select-all");
       this.all.addEventListener("change", () => {
@@ -35,6 +35,7 @@
         this.updateSelection();
       });
       this.toolbar.querySelector("[data-table-batch]").addEventListener("click", () => onBatch(source));
+      this.toolbar.querySelector("[data-table-delete]").addEventListener("click", () => onDelete(source));
       this.toolbar.querySelector("[data-table-reset]").addEventListener("click", () => this.tools.reset());
       this.updateSelection();
     }
@@ -60,6 +61,7 @@
       this.all.indeterminate = !this.all.checked && count > 0;
       this.all.disabled = eligible.length === 0;
       this.toolbar.querySelector("[data-table-batch]").disabled = count === 0;
+      this.toolbar.querySelector("[data-table-delete]").disabled = count === 0;
       this.toolbar.querySelector("[data-table-reset]").classList.toggle("hidden", !this.tools.active);
       this.toolbar.querySelector("[data-table-status]").textContent = `显示 ${this.visible.length} / ${this.items.length} 笔 · 已选 ${count} 笔`;
     }

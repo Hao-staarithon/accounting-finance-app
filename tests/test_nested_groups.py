@@ -198,6 +198,75 @@ class NestedGroupTests(unittest.TestCase):
         bill_app.init_db()
         self.assertEqual(self.display()["items"][0], root)
 
+    def test_delete_nested_leaf_preserves_group_names_and_remaining_hierarchy(self):
+        a, b, c, d = [self.add() for _ in range(4)]
+        outer = self.create([a, b, c, d], "anta支出")
+        child = self.create([a, b], "anta打车", outer)
+        sibling = self.create([c], "anta体检", outer)
+        before = self.snapshot()["transactions"]
+        response = self.client.post(f"/api/transactions/{a}/delete")
+        self.assertEqual((response.status_code, response.get_json()["deleted"]), (200, 1))
+        root = self.display()["items"][0]
+        self.assertEqual((root["group_id"], root["title"], root["amount"]), (outer, "anta支出", 4500))
+        remaining_child = next(item for item in root["children"] if item.get("group_id") == child)
+        self.assertEqual((remaining_child["title"], [item["id"] for item in remaining_child["members"]]), ("anta打车", [b]))
+        self.assertTrue(any(item.get("group_id") == sibling for item in root["children"]))
+        after = self.snapshot()["transactions"]
+        conn = bill_app.get_db()
+        try:
+            self.assertEqual(conn.execute("SELECT is_deleted FROM transactions WHERE id=?", (a,)).fetchone()[0], 1)
+            for tx in (a,b,c,d):
+                old = next(row for row in before if row[0] == tx)
+                new = next(row for row in after if row[0] == tx)
+                columns = [row["name"] for row in conn.execute("PRAGMA table_info(transactions)")]
+                for column in ("amount", "unique_key", "transaction_time"):
+                    self.assertEqual(old[columns.index(column)], new[columns.index(column)])
+        finally:
+            conn.close()
+
+    def test_batch_delete_removes_only_empty_groups_and_deduplicates_ids(self):
+        a, b, c = [self.add() for _ in range(3)]
+        outer = self.create([a,b,c], "保留外层")
+        child = self.create([a,b], "清空子组合", outer)
+        response = self.client.post("/api/transactions/batch-delete", json={"ids": [a,str(a),b]})
+        self.assertEqual((response.status_code, response.get_json()["deleted"]), (200, 2))
+        root = self.display()["items"][0]
+        self.assertEqual((root["group_id"], root["title"], len(root["members"])), (outer, "保留外层", 1))
+        self.assertNotIn(child, {row[0] for row in self.snapshot()["ledger_display_groups"]})
+        self.assertEqual(self.client.post("/api/transactions/batch-delete", json={"ids": [a,b]}).get_json()["deleted"], 0)
+        self.client.post(f"/api/transactions/{c}/delete")
+        self.assertEqual(self.display()["items"], [])
+        self.assertEqual(self.snapshot()["ledger_display_groups"], [])
+        self.assertEqual(len(self.snapshot()["transactions"]), 3)
+
+    def test_invalid_batch_delete_has_no_partial_effects(self):
+        a,b = self.add(),self.add()
+        self.create([a,b], "不可误删")
+        before = self.snapshot()
+        for body in (None, [], {"ids":[]}, {"ids":[a,99999]}, {"ids":[a,True]},
+                     {"ids":[a,1.5]}, {"ids":[a,"invalid"]}, {"ids":[a,0]},
+                     {"ids":[a,"9223372036854775808"]}, {"ids":[a]*5001}):
+            with self.subTest(body=body):
+                response = self.client.post("/api/transactions/batch-delete", json=body)
+                self.assertIn(response.status_code, (400,404))
+                self.assertEqual(self.snapshot(),before)
+        self.assertEqual(self.client.post("/api/transactions/99999/delete").status_code,404)
+        self.assertEqual(self.snapshot(),before)
+
+    def test_deleting_excluded_and_shared_items_updates_all_views(self):
+        a,b,c = [self.add() for _ in range(3)]
+        other = self.client.post("/api/ledgers",json={"name":"同步删除"}).get_json()["item"]["id"]
+        self.client.post(f"/api/transactions/{a}/ledgers",json={"ledger_ids":[self.ledger,other]})
+        group = self.create([a,b],"共享组合")
+        self.client.post(f"/api/transactions/{c}/count",json={"count_in_expense":False})
+        response = self.client.post("/api/transactions/batch-delete",json={"ids":[a,c]})
+        self.assertEqual(response.get_json()["deleted"],2)
+        for ledger in (self.ledger,other):
+            root=self.display(ledger)["items"][0]
+            self.assertEqual((root["group_id"],root["amount"]),(group,1500))
+        self.assertEqual(self.client.get("/api/transactions?count_in_expense=0").get_json()["items"],[])
+        self.assertEqual([row["id"] for row in self.client.get("/api/transactions").get_json()["items"]],[b])
+
     def test_cross_ledger_nested_names_and_amount_overrides(self):
         a, b, c = self.add(), self.add("100", "支出"), self.add("3500")
         other = self.client.post("/api/ledgers", json={"name": "另一账本"}).get_json()["item"]["id"]

@@ -810,6 +810,7 @@
         <div class="detail-tools">
           <span class="detail-tools-label">明细工具</span>
           <button id="btn-detail-batch" class="primary" disabled>批量设置分类/账本</button>
+          <button id="btn-detail-delete" class="danger" disabled>删除选中</button>
           <span id="detail-selected-count" class="small">勾选交易后可批量设置</span>
           <button id="btn-choose-columns">选择列</button>
           <button id="btn-detail-new-ledger">新建账本</button>
@@ -1291,13 +1292,14 @@
           <button id="btn-ledger-clear-filter" class="hidden">清除筛选和排序</button>
           <button id="btn-ledger-selection-clear" disabled>取消选择</button>
           <button id="btn-ledger-batch" disabled>批量设置分类/账本</button>
+          <button id="btn-ledger-delete" class="danger" disabled>删除选中</button>
           <button id="btn-ledger-move" disabled>移入已有组合</button>
           <button id="btn-ledger-group" class="primary" disabled>组合显示</button>
         </div>
       </div>
       <div class="table-wrap ledger-display-scroll">
         <table class="ledger-display-table" data-transaction-table="ledger">
-            <thead><tr><th><input id="ledger-check-all" type="checkbox" aria-label="全选当前筛选结果"></th><th data-col="time">时间</th><th data-col="title">交易/组合</th><th data-col="category">分类</th><th data-col="branch">账本</th><th data-col="original_amount">原始金额</th><th data-col="amount">账本金额</th></tr></thead>
+            <thead><tr><th><input id="ledger-check-all" type="checkbox" aria-label="全选当前筛选结果"></th><th data-col="time">时间</th><th data-col="title">交易/组合</th><th data-col="category">分类</th><th data-col="branch">账本</th><th data-col="original_amount">原始金额</th><th data-col="amount">账本金额</th><th data-col="actions">操作</th></tr></thead>
           <tbody id="ledger-display-body"></tbody>
         </table>
         <div id="ledger-display-empty" class="empty hidden">这个账本还没有交易</div>
@@ -1686,6 +1688,7 @@
       $("#btn-ledger-group").title = sources && !selection.valid ? "请选择同一层级的条目，每个组合最多 200 笔原始流水" : "保留已有组合，创建新一层组合";
       $("#btn-ledger-group").textContent = sources ? (selection.parent != null ? `建立子组合（${selection.items.length} 项）` : `组合显示选中 ${selection.items.length} 项`) : "组合显示";
       $("#btn-ledger-batch").disabled = !sources;
+      $("#btn-ledger-delete").disabled = !sources;
       $("#btn-ledger-move").disabled = !sources || !ledgerMoveTargets(selection.items).length;
       $("#btn-ledger-selection-clear").disabled = !sources;
       $$("#ledger-display-body .ledger-row-check, #ledger-display-body .ledger-member-check, #ledger-display-body .ledger-node-check").forEach(input=>{
@@ -1782,7 +1785,8 @@
             <td><button class="ledger-category-summary" title="展开后逐笔修改分类" onclick="this.closest('tr').querySelector('details').open=true">${(item.top_categories || [item.category || "其他"]).map(esc).join(" · ")}</button></td>
             <td class="small">--</td>
             <td class="mono nowrap">${esc(item.original_direction)} ¥${Number(item.original_amount || 0).toFixed(2)}</td>
-            <td class="amount ${dirClass[item.direction] || "neutral"}">¥${Number(item.amount || 0).toFixed(2)}</td>
+            <td data-col="amount" class="amount ${dirClass[item.direction] || "neutral"}">¥${Number(item.amount || 0).toFixed(2)}</td>
+            <td><button class="small danger" data-delete-group="${item.group_id}" onclick="deleteLedgerGroupItems(${item.group_id})">删除组内交易</button></td>
           </tr>`;
         }
         return `<tr>
@@ -1794,7 +1798,8 @@
           </select></td>
           <td><button class="small" onclick="openTransactionLedgers(${item.id})">账本（${(item.ledger_ids || []).length}）</button></td>
           <td class="mono nowrap">${esc(item.direction)} ¥${Number(item.original_amount || 0).toFixed(2)}</td>
-          <td class="amount ${dirClass[item.direction] || "neutral"}"><button class="ledger-amount-trigger" data-tx-id="${item.id}" title="点击修改账本金额" aria-label="修改账本金额" onclick="openLedgerAmountEditor(${item.id})">¥${Number(item.amount || 0).toFixed(2)}</button>${item.ledger_amount_adjusted ? '<div class="small">已调整</div>' : ""}</td>
+          <td data-col="amount" class="amount ${dirClass[item.direction] || "neutral"}"><button class="ledger-amount-trigger" data-tx-id="${item.id}" title="点击修改账本金额" aria-label="修改账本金额" onclick="openLedgerAmountEditor(${item.id})">¥${Number(item.amount || 0).toFixed(2)}</button>${item.ledger_amount_adjusted ? '<div class="small">已调整</div>' : ""}</td>
+          <td>${deleteTransactionButton(item.id)}</td>
         </tr>`;
       });
       // Reuse unchanged rows, and preserve an edited group's expansion and scroll.
@@ -1825,7 +1830,7 @@
       updateLedgerSelection();
     }
     function ledgerGroupActions(group) {
-      return `<div class="ledger-source-actions"><button class="small ledger-subgroup-trigger" data-parent-group-id="${group.group_id}" onclick="openLedgerGroupEditor(${group.group_id})" disabled>组合组内所选</button><button class="small" onclick="ungroupLedgerDisplay(${group.group_id})">拆开此层</button></div>`;
+      return `<div class="ledger-source-actions"><button class="small ledger-subgroup-trigger" data-parent-group-id="${group.group_id}" onclick="openLedgerGroupEditor(${group.group_id})" disabled>组合组内所选</button><button class="small danger" data-delete-group="${group.group_id}" onclick="deleteLedgerGroupItems(${group.group_id})">删除组内交易</button><button class="small" onclick="ungroupLedgerDisplay(${group.group_id})">拆开此层</button></div>`;
     }
     function ledgerGroupButtons(group) {
       return `<div class="ledger-group-buttons"><button class="small ledger-group-add" onclick="openLedgerMoveEditor(${group.group_id})">添加条目</button><button class="small ledger-group-rename" onclick="openLedgerGroupName(${group.group_id})" aria-label="重命名组合">重命名</button></div>`;
@@ -1834,7 +1839,7 @@
       if (item.type === "group") {
         return `<div class="ledger-child-group"><input type="checkbox" class="ledger-node-check" value="${item.id}" aria-label="选择子组合"><div class="ledger-group-main ledger-nested-group">${ledgerGroupButtons(item)}<details data-group-id="${item.group_id}"><summary>${esc(item.title)}<div class="small">${item.members.length} 笔原始流水 · ${esc(item.direction)} ¥${Number(item.amount).toFixed(2)}</div></summary><div class="ledger-source-list">${ledgerGroupChildren(item).map(renderLedgerChild).join("")}${ledgerGroupActions(item)}</div></details></div></div>`;
       }
-      return `<div class="ledger-source-line"><input type="checkbox" class="ledger-member-check" value="${item.id}" data-group-id="g-${item.parent_group_id}" aria-label="选择组合内交易"><span>${esc(item.counterparty || "交易")}</span><span class="mono">${esc(item.direction)} ¥${Number(item.original_amount || 0).toFixed(2)}</span><select class="ledger-category-select" style="width:${ledgerCategoryControlWidth(item.category)}px" data-tx-id="${item.id}" data-current-category="${esc(item.category || "其他")}" aria-label="修改原始交易分类" onchange="chooseCategory(this, ${item.id}, 'ledger')">${categoryOptions(item.category)}</select><button class="small" onclick="openTransactionLedgers(${item.id})">账本（${(item.ledger_ids || []).length}）</button><span>账本金额 <button class="ledger-amount-trigger" data-tx-id="${item.id}" onclick="openLedgerAmountEditor(${item.id})">¥${Number(item.ledger_amount || 0).toFixed(2)}</button></span></div>`;
+      return `<div class="ledger-source-line"><input type="checkbox" class="ledger-member-check" value="${item.id}" data-group-id="g-${item.parent_group_id}" aria-label="选择组合内交易"><span>${esc(item.counterparty || "交易")}</span><span class="mono">${esc(item.direction)} ¥${Number(item.original_amount || 0).toFixed(2)}</span><select class="ledger-category-select" style="width:${ledgerCategoryControlWidth(item.category)}px" data-tx-id="${item.id}" data-current-category="${esc(item.category || "其他")}" aria-label="修改原始交易分类" onchange="chooseCategory(this, ${item.id}, 'ledger')">${categoryOptions(item.category)}</select><button class="small" onclick="openTransactionLedgers(${item.id})">账本（${(item.ledger_ids || []).length}）</button><span>账本金额 <button class="ledger-amount-trigger" data-tx-id="${item.id}" onclick="openLedgerAmountEditor(${item.id})">¥${Number(item.ledger_amount || 0).toFixed(2)}</button></span>${deleteTransactionButton(item.id)}</div>`;
     }
     function filterLedgerDisplay(category, direction) {
       openLedgerDisplayModal({ category, direction });
@@ -2951,12 +2956,15 @@
       else if (source === "ledgerDrill") setLedgerDrillCategory(txId, category);
       else if (source === "summaryDrill") setCategoryFromDrill(txId, category);
     }
+    function deleteTransactionButton(txId) {
+      return `<button class="small danger" data-delete-tx="${txId}" onclick="deleteTx(${txId})" aria-label="删除这笔交易">删除</button>`;
+    }
     function transactionActionSelect(txId, source) {
       return `<select class="small action-select" aria-label="交易操作" onchange="handleTransactionAction(this, ${txId}, '${source}')">
         <option value="">操作</option>
         <option value="exclude">移至不记录</option>
         <option value="delete">删除</option>
-      </select>`;
+      </select>${deleteTransactionButton(txId)}`;
     }
     function handleTransactionAction(select, txId, source) {
       const action = select.value;
@@ -3301,17 +3309,18 @@
     };
     const tableColumns = keys => keys.map(key => transactionColumns[key]);
     const transactionTables = {
-      excluded: new TransactionTable({source:"excluded", table:"#excluded-table", body:"#excluded-list", toolbar:"#excluded-table-tools", empty:"#excluded-empty", onBatch:openBatchOrganize,
+      excluded: new TransactionTable({source:"excluded", table:"#excluded-table", body:"#excluded-list", toolbar:"#excluded-table-tools", empty:"#excluded-empty", onBatch:openBatchOrganize, onDelete:deleteSelectedTransactions,
         columns:[...tableColumns(["time","source","branch","counterparty","description","category","amount","direction"]),
           {key:"reason", label:"原因", value:item=>item.exclude_reason || "手动设为不记录"},
-          {key:"actions", label:"操作", filterable:false, value:()=>"", cell:item=>`<button class="small" onclick="restoreExcluded(${item.id})">恢复到账单</button>`}]}),
-      drill: new TransactionTable({source:"drill", table:"#drill-table", body:"#drill-body", toolbar:"#drill-table-tools", empty:"#drill-empty", onBatch:openBatchOrganize,
+          {key:"actions", label:"操作", filterable:false, value:()=>"", cell:item=>`<button class="small" onclick="restoreExcluded(${item.id})">恢复到账单</button>${deleteTransactionButton(item.id)}`}]}),
+      drill: new TransactionTable({source:"drill", table:"#drill-table", body:"#drill-body", toolbar:"#drill-table-tools", empty:"#drill-empty", onBatch:openBatchOrganize, onDelete:deleteSelectedTransactions,
         columns:[...tableColumns(["time","source","counterparty","description","amount","direction"]),
           {...transactionColumns.category, cell:item=>`<select data-tx-id="${item.id}" data-current-category="${esc(item.category || "其他")}" onchange="chooseCategory(this, ${item.id}, '${activeDrill === "ledger" ? "ledgerDrill" : "summaryDrill"}')">${categoryOptions(item.category)}</select>`},
           {key:"actions", label:"操作", filterable:false, value:()=>"", cell:item=>`<button class="small" onclick="openTransactionLedgers(${item.id})">账本（${(item.ledger_ids || []).length}）</button>${transactionActionSelect(item.id, activeDrill === "ledger" ? "ledgerDrill" : "summaryDrill")}`}]}),
-      combined: new TransactionTable({source:"combined", table:"#combined-table", body:"#combined-details-body", toolbar:"#combined-table-tools", empty:"#combined-details-empty", onBatch:openBatchOrganize,
+      combined: new TransactionTable({source:"combined", table:"#combined-table", body:"#combined-details-body", toolbar:"#combined-table-tools", empty:"#combined-details-empty", onBatch:openBatchOrganize, onDelete:deleteSelectedTransactions,
         columns:[...tableColumns(["time","counterparty","category","branch","direction","amount"]),
-          {key:"amount_source", label:"金额来源", value:item=>item.amount_source || ""}]}),
+          {key:"amount_source", label:"金额来源", value:item=>item.amount_source || ""},
+          {key:"actions", label:"操作", filterable:false, value:()=>"", cell:item=>deleteTransactionButton(item.id)}]}),
     };
     const detailTableTools = new TableTools("#detail-table", [
       { key: "time", label: "时间", type: "date", value: item => (item.transaction_time || "").slice(0, 10), sortValue: item => item.transaction_time },
@@ -3535,6 +3544,7 @@
       $("#selection-count").textContent = count;
       $("#detail-actions").classList.toggle("hidden", count === 0);
       $("#btn-detail-batch").disabled = count === 0;
+      $("#btn-detail-delete").disabled = count === 0;
       $("#detail-selected-count").textContent = count ? `已选 ${count} 笔交易` : "勾选交易后可批量设置";
     }
     function applyColumnVisibility() {
@@ -3605,19 +3615,43 @@
         loadSummary();
       } catch (err) { showFlash(err.message, true); }
     }
-    async function deleteTx(id) {
-      if (!(await askConfirm("确定删除这条记录吗？原始记录会从明细和汇总中隐藏，但仍保留在数据库。", { confirmText: "删除" }))) return;
-      try {
-        await api(`/api/transactions/${id}/delete`, { method: "POST" });
-        showFlash("已删除");
-        await Promise.all([loadDetail(), loadSummary(), loadLedgers()]);
-        if (!$("#drill-modal").classList.contains("hidden")) {
-          if (activeDrill === "ledger") openLedgerDrill(drillCategory, drillDirection);
-          else openDrill(drillCategory, drillMonth);
-        }
+    let deletingTransactions = false;
+    async function deleteTransactions(rawIds) {
+      const ids = [...new Set(rawIds.map(Number))];
+      if (!ids.length || ids.length>5000 || ids.some(id=>!Number.isSafeInteger(id) || id<=0)) {
+        showFlash("请选择 1 至 5000 笔原始交易",true); return;
       }
-      catch (err) { showFlash(err.message, true); }
+      if (deletingTransactions) return;
+      deletingTransactions = true;
+      try {
+        if (!(await askConfirm(`确定删除这 ${ids.length} 笔原始交易吗？将从所有账本、明细和汇总中删除；原始记录仍保留在数据库。组合中的其他条目和名称会保留。`, {confirmText:"删除交易"}))) return;
+        const result = await api("/api/transactions/batch-delete",{method:"POST",body:{ids}});
+        detailState.selected.clear(); ledgerSelectedIds.clear(); ledgerSelectedMembers.clear();
+        Object.values(transactionTables).forEach(table=>table.clearSelection());
+        updateSelectionBar(); updateLedgerSelection();
+        await Promise.all([loadDetail(),loadExcluded(),loadSummary(),loadLedgers()]);
+        if (!$("#drill-modal").classList.contains("hidden")) {
+          if (activeDrill === "ledger") await openLedgerDrill(drillCategory,drillDirection);
+          else await openDrill(drillCategory,drillMonth);
+        }
+        if ($("#page-pending").classList.contains("active")) await loadPending();
+        showFlash(`已删除 ${result.deleted} 笔交易`);
+      } catch (err) { showFlash(err.message,true); }
+      finally { deletingTransactions=false; }
     }
+    function deleteTx(id) { return deleteTransactions([id]); }
+    function deleteSelectedTransactions(source) {
+      const ids = source === "ledger" ? selectedLedgerSourceIds()
+        : source === "detail" ? [...detailState.selected] : [...transactionTables[source].selected];
+      return deleteTransactions(ids);
+    }
+    function deleteLedgerGroupItems(groupId) {
+      const group = ledgerNodeMap().get(`g-${groupId}`);
+      if (group) return deleteTransactions(group.members.map(item=>item.id));
+    }
+    window.deleteLedgerGroupItems = deleteLedgerGroupItems;
+    $("#btn-ledger-delete").addEventListener("click",()=>deleteSelectedTransactions("ledger"));
+    $("#btn-detail-delete").addEventListener("click",()=>deleteSelectedTransactions("detail"));
     async function unmerge(primaryId, secondaryId) {
       try {
         await api("/api/unmerge", { method: "POST", body: { primary_id: primaryId, secondary_id: secondaryId } });
@@ -3643,18 +3677,7 @@
       updateCheckAll();
       updateSelectionBar();
     }
-    async function batchDeleteSelected() {
-      const ids = Array.from(detailState.selected);
-      if (!ids.length) return;
-      if (!(await askConfirm(`确定删除选中的 ${ids.length} 条记录吗？`, { confirmText: "删除" }))) return;
-      try {
-        await api("/api/transactions/batch-delete", { method: "POST", body: { ids } });
-        showFlash(`已删除 ${ids.length} 条`);
-        clearSelection();
-        loadDetail();
-        loadSummary();
-      } catch (err) { showFlash(err.message, true); }
-    }
+    function batchDeleteSelected() { return deleteSelectedTransactions("detail"); }
     function openBatchCategoryModal() {
       if (!detailState.selected.size) { showFlash("请先勾选记录", true); return; }
       $("#batch-category-options").innerHTML = allCategories.map((c) =>

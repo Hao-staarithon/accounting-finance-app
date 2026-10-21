@@ -40,7 +40,7 @@ CHECKS = r"""
     input.value = text; input.dispatchEvent(new Event('input', {bubbles:true}));
   };
   const rawAmounts = () => [...document.querySelectorAll('#detail-body td[data-col="amount"]')].map(td => Number(td.textContent.replace('¥','')));
-  const groupAmounts = () => [...document.querySelectorAll('#ledger-display-body > tr > td:last-child')].map(td => Number(td.textContent.trim().replace('¥','').replace('已调整','')));
+  const groupAmounts = () => [...document.querySelectorAll('#ledger-display-body > tr > td[data-col="amount"]')].map(td => Number(td.textContent.trim().replace('¥','').replace('已调整','')));
   const equal = (a,b,label) => assert(JSON.stringify(a) === JSON.stringify(b), `${label}: ${JSON.stringify(a)}`);
   try {
     await until(() => allLedgers.length > 0 && document.querySelector('#page-summary').classList.contains('active'), 'initialization');
@@ -376,6 +376,61 @@ CHECKS = r"""
     assert(ledgerDisplayItems.reduce((sum,item)=>sum+item.amount*(item.direction==='收入'?1:-1),0)===originalNet,'moving existing members preserves net amount');
     assert((await api('/api/transactions')).items.length===6,'moving entries preserves original source rows');
     console.log('PASS: add to existing child directly, sibling and external entry moves, toolbar selection, cancel, search and intact subgroup moves');
+
+    const deleteButton=source=>source==='detail' ? document.querySelector('#btn-detail-delete')
+      : source==='ledger' ? document.querySelector('#btn-ledger-delete') : transactionTables[source].toolbar.querySelector('[data-table-delete]');
+    assert(allTables.every(table=>deleteButton(table.dataset.transactionTable)),'every table has bulk deletion');
+    const cancelDelete=async(click,label)=>{
+      click(); await until(()=>!document.querySelector('#confirm-modal').classList.contains('hidden'),label+' opens confirmation');
+      assert(document.querySelector('#confirm-message').textContent.includes('所有账本'),'delete explains global transaction scope');
+      document.querySelector('#btn-confirm-cancel').click(); await until(()=>!deletingTransactions,label+' cancelled');
+    };
+    const confirmDelete=async(click,condition,label)=>{
+      click(); await until(()=>!document.querySelector('#confirm-modal').classList.contains('hidden'),label+' asks confirmation');
+      document.querySelector('#btn-confirm-ok').click(); await until(()=>!deletingTransactions && condition(),label+' refreshed');
+    };
+    nodeCheck(1).click(); nodeCheck(2).click();
+    await cancelDelete(()=>deleteButton('ledger').click(),'ledger selected originals'); clearNestedSelection();
+    await cancelDelete(()=>document.querySelector(`[data-delete-group="1"]`).click(),'delete whole nested group');
+    assert((await api('/api/transactions')).items.length===6,'cancelled deletions preserve all source entries');
+    await confirmDelete(()=>document.querySelector('#ledger-display-body [data-delete-tx="1"]').click(),
+      ()=>!ledgerNodeMap().has('1'),'single nested entry deletion');
+    assert(ledgerNodeMap().get('g-1').title==='anta打车' && ledgerNodeMap().get('g-1').members.length===4 &&
+      ledgerNodeMap().get(`g-${anta}`).members.length===5,'deleting a leaf retains names and recalculates ancestors');
+
+    await openLedgerDrill('购物','支出');
+    document.querySelector('#drill-body .table-tx-check[value="2"]').click();
+    await confirmDelete(()=>deleteButton('drill').click(),()=>!transactionTables.drill.items.some(item=>item.id===2),'independent category bulk deletion');
+    document.querySelector('#btn-drill-close').click();
+    selectedComboLedgers=[nestedLedger]; await loadSummary();
+    await openDrill('购物','2026-10');
+    await confirmDelete(()=>document.querySelector('#drill-body [data-delete-tx="5"]').click(),
+      ()=>!transactionTables.drill.items.some(item=>item.id===5),'summary category single deletion');
+    document.querySelector('#btn-drill-close').click();
+
+    document.querySelector('#btn-combined-details').click(); transactionTables.combined.tools.reset();
+    assert(transactionTables.combined.visible.every(item=>document.querySelector(`#combined-details-body [data-delete-tx="${item.id}"]`)),'combined rows expose single delete actions');
+    header('#combined-table','amount').click(); menu().querySelector('[data-range="min"]').value='100'; apply();
+    document.querySelector('#combined-table .table-select-all').click();
+    equal([...transactionTables.combined.selected],[3],'combined deletion honors visible filtered selection');
+    await confirmDelete(()=>deleteButton('combined').click(),()=>!transactionTables.combined.items.some(item=>item.id===3),'combined filtered bulk deletion');
+    assert(transactionTables.combined.selected.size===0 && transactionTables.combined.visible.length===0,'deleted selections cleared and column filters preserved');
+    document.querySelector('#btn-combined-details-close').click();
+
+    await api('/api/transactions/4/count',{method:'POST',body:{count_in_expense:false}});
+    switchPage('excluded'); await loadExcluded(); transactionTables.excluded.tools.reset();
+    document.querySelector('#excluded-table .table-select-all').click();
+    await cancelDelete(()=>deleteButton('excluded').click(),'excluded bulk delete');
+    await confirmDelete(()=>document.querySelector('#excluded-list [data-delete-tx="4"]').click(),
+      ()=>transactionTables.excluded.items.length===0,'excluded single deletion');
+    switchPage('detail'); document.querySelector('#filter-branch').value='__all__'; detailTableTools.reset(false); await loadDetail();
+    assert(detailState.items.length===1 && detailState.items[0].id===6,'only undeleted original remains in total bill');
+    assert(document.querySelector('#detail-body [data-delete-tx="6"]'),'total bill single delete action');
+    document.querySelector('#check-all').click();
+    await confirmDelete(()=>deleteButton('detail').click(),()=>detailState.items.length===0,'total bill selected deletion');
+    assert(deleteButton('detail').disabled && deleteButton('ledger').disabled,'empty table deletion disabled');
+    assert((await api('/api/transactions')).items.length===0 && (await api('/api/transactions?count_in_expense=0')).items.length===0,'deleted entries removed from recorded and excluded lists');
+    console.log('PASS: single and bulk deletion in every detail context, confirmation cancellation, filtered selection, stable nested groups and refreshed totals');
     window.__tableCheck = {done:true, success:true};
   } catch (error) {
     console.error(error.stack);

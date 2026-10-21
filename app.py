@@ -3406,32 +3406,47 @@ def api_update_category_ledger_rules():
 
 @app.post("/api/transactions/<int:tx_id>/delete")
 def api_delete(tx_id: int):
-    conn = get_db()
-    try:
-        clear_ledger_display_groups_for_tx(conn, tx_id)
-        conn.execute("UPDATE transactions SET is_deleted=1 WHERE id=?", (tx_id,))
-        conn.commit()
-        return jsonify({"ok": True})
-    finally:
-        conn.close()
+    return delete_transaction_ids([tx_id])
 
 
 @app.post("/api/transactions/batch-delete")
 def api_batch_delete():
-    data = request.get_json(silent=True) or {}
-    ids = data.get("ids") or []
-    if not isinstance(ids, list) or not ids:
-        return api_error("未选择记录")
+    data = request.get_json(silent=True)
+    return delete_transaction_ids(data.get("ids") if isinstance(data, dict) else None)
+
+
+def delete_transaction_ids(raw_ids):
+    """Soft delete atomically, retaining nonempty groups and original import keys."""
+    if not isinstance(raw_ids, list) or not 1 <= len(raw_ids) <= 5000:
+        return api_error("请选择 1 至 5000 笔原始交易")
+    try:
+        if any(isinstance(value, bool) or not isinstance(value, (int, str)) for value in raw_ids):
+            raise ValueError
+        ids = sorted({int(value) for value in raw_ids})
+        if any(not 1 <= value <= 9223372036854775807 for value in ids):
+            raise ValueError
+    except (TypeError, ValueError):
+        return api_error("交易 ID 无效")
     conn = get_db()
     try:
-        for tx_id in ids:
-            clear_ledger_display_groups_for_tx(conn, int(tx_id))
-        conn.executemany(
-            "UPDATE transactions SET is_deleted=1 WHERE id=?",
-            [(int(i),) for i in ids],
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        rows = []
+        for offset in range(0, len(ids), 500):
+            chunk = ids[offset:offset + 500]
+            rows.extend(conn.execute(
+                f"SELECT id,is_deleted FROM transactions WHERE id IN ({','.join('?' for _ in chunk)})", chunk
+            ).fetchall())
+        if len(rows) != len(ids):
+            return api_error("部分交易不存在，请刷新后重试", 404)
+        conn.executemany("DELETE FROM ledger_display_group_items WHERE tx_id=?", [(tx,) for tx in ids])
+        empty_groups = conn.execute("""SELECT id FROM ledger_display_groups g WHERE NOT EXISTS
+            (SELECT 1 FROM ledger_display_group_items i WHERE i.group_id=g.id)""").fetchall()
+        for group in empty_groups:
+            dissolve_display_group(conn, group["id"])
+        conn.executemany("UPDATE transactions SET is_deleted=1 WHERE id=?", [(tx,) for tx in ids])
+        conn.executemany("DELETE FROM ai_category_suggestions WHERE tx_id=?", [(tx,) for tx in ids])
         conn.commit()
-        return jsonify({"ok": True, "deleted": len(ids)})
+        return jsonify({"ok": True, "deleted": sum(not row["is_deleted"] for row in rows)})
     finally:
         conn.close()
 
