@@ -3,6 +3,7 @@
 import os
 import tempfile
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 import app as bill_app
@@ -74,6 +75,55 @@ class BudgetApiTests(unittest.TestCase):
         summary = self.client.get("/api/summary?month=2026-09").get_json()
         self.assertEqual(summary["budget"]["amount"], 50.0)
         self.assertIn("2026-09", summary["available_months"])
+
+    def test_legacy_invalid_months_do_not_break_summary_or_export(self):
+        conn = bill_app.get_db()
+        try:
+            months = ["2026-09", "支付宝-拉扎斯", "2026-13", "2026-00", "", None]
+            conn.executemany(
+                "INSERT INTO transactions (source, month, amount, direction) "
+                "VALUES ('alipay', ?, 10, '支出')",
+                [(month,) for month in months],
+            )
+            conn.execute("INSERT INTO monthly_budgets VALUES ('2026-10', 10000)")
+            conn.commit()
+        finally:
+            conn.close()
+        response = self.client.get("/api/summary")
+        self.assertEqual(response.status_code, 200)
+        summary = response.get_json()
+        self.assertEqual(summary["month"], "2026-10")
+        self.assertEqual(summary["available_months"], ["2026-10", "2026-09"])
+        self.assertEqual(summary["hist_avg"], 10)
+        self.assertEqual(self.client.get("/api/monthly-ledgers").status_code, 200)
+        self.assertEqual(self.client.get("/api/export").status_code, 200)
+        conn = bill_app.get_db()
+        try:
+            self.assertEqual(conn.execute("SELECT count(*) FROM transactions").fetchone()[0], len(months))
+        finally:
+            conn.close()
+
+    def test_only_invalid_months_fall_back_to_current_month(self):
+        conn = bill_app.get_db()
+        try:
+            conn.execute(
+                "INSERT INTO transactions (source, month, amount, direction) "
+                "VALUES ('alipay', '支付宝-拉扎斯', 10, '支出')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        response = self.client.get("/api/summary")
+        self.assertEqual(response.status_code, 200)
+        summary = response.get_json()
+        self.assertEqual(summary["month"], datetime.now().strftime("%Y-%m"))
+        self.assertEqual(summary["available_months"], [])
+        self.assertEqual(summary["total"], 0)
+
+    def test_summary_rejects_invalid_requested_month(self):
+        for month in ("支付宝-拉扎斯", "2026-13", "0000-01"):
+            with self.subTest(month=month):
+                self.assertEqual(self.client.get("/api/summary", query_string={"month": month}).status_code, 400)
 
 
 if __name__ == "__main__":

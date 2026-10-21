@@ -387,9 +387,17 @@ def stable_key(prefix: str, *parts: Any) -> str:
 
 
 def month_from_time(time_str: Optional[str]) -> str:
-    if time_str and len(time_str) >= 7:
-        return time_str[:7]
-    return ""
+    if not time_str:
+        return ""
+    try:
+        return datetime.strptime(time_str[:10], "%Y-%m-%d").strftime("%Y-%m")
+    except ValueError:
+        # Unparseable dates retain their original text for review, not as a month.
+        return ""
+
+
+def is_valid_month(value: str) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(r"[0-9]{4}-(0[1-9]|1[0-2])", value)) and not value.startswith("0000")
 
 
 def month_add(month: str, delta: int) -> str:
@@ -406,7 +414,8 @@ def month_list_from_db(conn: sqlite3.Connection) -> List[str]:
         "UNION SELECT month FROM monthly_budgets) "
         "ORDER BY month DESC"
     ).fetchall()
-    return [r["month"] for r in rows]
+    # Older imports may have stored merchant text in the month column.
+    return [r["month"] for r in rows if is_valid_month(r["month"])]
 
 
 # --------------------------------------------------------------------------
@@ -903,7 +912,7 @@ def _parse_rows(
                         "raw": raw_line,
                     }
                 )
-            elif not time_raw:
+            elif ts is None:
                 warnings.append(
                     {
                         "line": row_no,
@@ -972,7 +981,7 @@ def _parse_rows(
                         "raw": raw_line,
                     }
                 )
-            if not time_raw:
+            if ts is None:
                 warnings.append(
                     {
                         "line": row_no,
@@ -2732,7 +2741,10 @@ def api_transactions():
 
 @app.get("/api/summary")
 def api_summary():
-    return jsonify(compute_summary(request.args.get("month")))
+    month = request.args.get("month")
+    if month and not is_valid_month(month):
+        return api_error("月份格式应为 YYYY-MM")
+    return jsonify(compute_summary(month))
 
 
 @app.get("/api/monthly-ledgers")

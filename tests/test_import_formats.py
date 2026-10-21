@@ -68,6 +68,20 @@ class ImportFormatTests(unittest.TestCase):
         self.assertEqual(self.upload("支付宝.csv", alipay.encode("gb18030"))["inserted"], 1)
         self.assertEqual([r["source"] for r in self.records()], ["wx", "alipay"])
 
+    def test_invalid_platform_date_is_preserved_without_invalid_month(self):
+        content = (
+            "交易时间,交易类型,交易对方,商品说明,收/支,金额,交易订单号,商家订单号\n"
+            "支付宝-拉扎斯,消费,店铺,午餐,支出,10,invalid-date-1,shop-1\n"
+            "2026-02-31,消费,店铺,晚餐,支出,20,invalid-date-2,shop-2\n"
+        ).encode("utf-8")
+        result = self.upload("支付宝.csv", content)
+        self.assertEqual(result["inserted"], 2)
+        rows = self.records()
+        self.assertEqual([r["transaction_time"] for r in rows], ["支付宝-拉扎斯", "2026-02-31"])
+        self.assertEqual([r["month"] for r in rows], ["", ""])
+        self.assertEqual(len(result["warnings"]), 2)
+        self.assertEqual(self.client.get("/api/summary").status_code, 200)
+
     def test_generic_csv_split_income_expense_and_duplicate_skip(self):
         content = ("账单说明\n日期;收入;支出;摘要\n"
                    "2026/09/03;100;;工资\n2026/09/04;;25.50;午餐\n"
