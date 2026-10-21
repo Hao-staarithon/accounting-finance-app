@@ -471,6 +471,14 @@ class MultiLedgerTests(unittest.TestCase):
         self.assertEqual(self.client.delete(
             f"/api/ledger-display-groups/{final.get_json()['group_id']}"
         ).status_code, 200)
+        remaining = self.client.get(f"/api/ledgers/{self.dy}/display").get_json()["items"]
+        self.assertEqual(len(remaining), 2)
+        nested = next(item for item in remaining if item["type"] == "group")
+        self.assertEqual(nested["group_id"], next_group)
+        self.assertEqual(nested["children"][0]["group_id"], initial)
+        self.assertEqual(self.client.delete(f"/api/ledger-display-groups/{next_group}").status_code, 200)
+        self.assertEqual(len(self.client.get(f"/api/ledgers/{self.dy}/display").get_json()["items"]), 3)
+        self.assertEqual(self.client.delete(f"/api/ledger-display-groups/{initial}").status_code, 200)
         self.assertEqual(len(self.client.get(f"/api/ledgers/{self.dy}/display").get_json()["items"]), 4)
         self.assertEqual(self.row(first)["amount"], 100)
 

@@ -150,7 +150,10 @@ CHECKS = r"""
     assert(groupRow().querySelector('.ledger-row-check').indeterminate, 'partial group shows indeterminate');
     groupRow().querySelector('.ledger-member-check[value="2"]').click();
     equal(selectedLedgerSourceIds().slice().sort(), [1,2], 'full group has distinct source ids');
-    assert(groupRow().querySelector('.ledger-row-check').checked, 'all members promote group selection');
+    assert(groupRow().querySelector('.ledger-row-check').indeterminate, 'member selection remains inside parent');
+    assert(!document.querySelector('#btn-ledger-group').disabled && ledgerGroupingSelection().parent===1, 'all members can form a subgroup');
+    groupRow().querySelector('.ledger-row-check').click();
+    assert(groupRow().querySelector('.ledger-row-check').checked, 'explicit parent selection selects whole group');
     groupRow().querySelector('.ledger-row-check').click();
     assert(selectedLedgerSourceIds().length === 0, 'group deselect clears all members');
     document.querySelector('#ledger-check-all').click();
@@ -277,6 +280,61 @@ CHECKS = r"""
     assert(excluded.find(item=>item.id===3).category==='购物','excluded unselected row unaffected');
     assert((await api('/api/summary?month=2026-10')).total===beforeTotal,'excluded batch leaves accounting totals unchanged');
     console.log('PASS: every table has filters, sorting, selection and bulk classification/membership, including excluded and both category drills');
+
+    for(const id of [3,4]) await api(`/api/transactions/${id}/count`,{method:'POST',body:{count_in_expense:true}});
+    const nestedLedger=(await api('/api/ledgers',{method:'POST',body:{name:'嵌套验证账本'}})).item.id;
+    await api('/api/transactions/batch-organize',{method:'POST',body:{ids:[1,2,3,4,5,6],ledger_mode:'add',ledger_ids:[nestedLedger]}});
+    await loadLedgers(); openLedger('嵌套验证账本'); await loadLedgerStats();
+    await until(()=>ledgerNodeMap().has('3'),'new ledger view loaded'); openLedgerDisplayModal();
+    ledgerTableTools.reset();
+    const nodeCheck=id=>[...document.querySelectorAll('#ledger-display-body input[type="checkbox"]')].find(input=>input.value===String(id));
+    const groupDetails=id=>document.querySelector(`#ledger-display-body details[data-group-id="${id}"]`);
+    const clearNestedSelection=()=>document.querySelector('#btn-ledger-selection-clear').click();
+    const createNestedUI=async(title,button=document.querySelector('#btn-ledger-group'))=>{
+      assert(!button.disabled,'same-level selection enables grouping'); button.click();
+      assert(!document.querySelector('#ledger-group-modal').classList.contains('hidden'),'nested naming dialog opens');
+      document.querySelector('#ledger-group-title').value=title;
+      document.querySelector('#btn-ledger-group-save').click();
+      await until(()=>[...ledgerNodeMap().values()].some(item=>item.title===title),'nested group saved: '+title);
+      return [...ledgerNodeMap().values()].find(item=>item.title===title).group_id;
+    };
+    assert(nodeCheck('g-1') && nodeCheck(3),'nested fixtures ready: '+JSON.stringify([...ledgerNodeMap().keys()]));
+    nodeCheck('g-1').click(); nodeCheck(3).click();
+    const salary=await createNestedUI('即墨工资');
+    assert(ledgerNodeMap().get('g-1').parent_group_id===salary,'combining group and raw entry retains original group');
+    assert(ledgerNodeMap().get(`g-${salary}`).members.length===3,'outer membership contains unique original leaves');
+    assert(groupDetails(salary).open,'new parent opens automatically');
+    nodeCheck(3).click();
+    const august=await createNestedUI('八月工资',document.querySelector(`[data-parent-group-id="${salary}"]`));
+    assert(ledgerNodeMap().get(`g-${august}`).members.length===1,'single salary entry can have a subgroup name');
+    assert(groupDetails(salary).open && groupDetails(august).open,'ancestor and newly created child remain expanded');
+    openLedgerGroupName(1); document.querySelector('#ledger-group-name').value='七月工资';
+    document.querySelector('#btn-ledger-group-name-save').click();
+    await until(()=>ledgerNodeMap().get('g-1')?.title==='七月工资','nested group rename');
+    nodeCheck(`g-${salary}`).click();
+    equal(selectedLedgerSourceIds().slice().sort((a,b)=>a-b),[1,2,3],'ancestor selection counts each leaf once');
+    groupDetails(1).open=true; nodeCheck(1).click();
+    equal(selectedLedgerSourceIds().slice().sort((a,b)=>a-b),[2,3],'deselecting nested leaf retains siblings at every level');
+    assert(nodeCheck('g-1').indeterminate && nodeCheck(`g-${salary}`).indeterminate,'nested ancestor partial checkboxes');
+    assert(document.querySelector('#btn-ledger-group').disabled,'mixed levels cannot accidentally regroup');
+    clearNestedSelection(); nodeCheck('g-1').click(); nodeCheck(`g-${august}`).click();
+    const breakdown=await createNestedUI('工资分项');
+    assert(ledgerNodeMap().get(`g-${breakdown}`).parent_group_id===salary,'new nested layer stays inside original parent');
+    assert(ledgerNodeMap().get('g-1').parent_group_id===breakdown &&
+      ledgerNodeMap().get(`g-${august}`).parent_group_id===breakdown,'combining children preserves both named subgroups');
+    const nestedOpen=groupDetails(1); nestedOpen.open=true;
+    await loadLedgerStats();
+    assert(groupDetails(1)===nestedOpen && nestedOpen.open,'unchanged deeply nested details reused');
+    groupDetails(breakdown).querySelector(':scope > .ledger-source-list > .ledger-source-actions button:last-child').click();
+    await until(()=>!ledgerNodeMap().has(`g-${breakdown}`),'split internal layer');
+    assert(ledgerNodeMap().get('g-1').parent_group_id===salary &&
+      ledgerNodeMap().get(`g-${august}`).parent_group_id===salary,'internal split promotes children and preserves names');
+    groupDetails(salary).querySelector(':scope > .ledger-source-list > .ledger-source-actions button:last-child').click();
+    await until(()=>!ledgerNodeMap().has(`g-${salary}`),'split outer layer');
+    assert(ledgerDisplayItems.some(item=>item.group_id===1 && item.title==='七月工资') &&
+      ledgerDisplayItems.some(item=>item.group_id===august && item.title==='八月工资'),'outer split keeps original named groups');
+    assert((await api('/api/transactions')).items.length===6,'nested operations preserve source transactions');
+    console.log('PASS: nested salary grouping, single-entry child, rename, recursive checkbox selection and layer-only split');
     window.__tableCheck = {done:true, success:true};
   } catch (error) {
     console.error(error.stack);

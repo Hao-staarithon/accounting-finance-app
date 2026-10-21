@@ -23,6 +23,10 @@
 .table-column-menu .menu-empty, .table-column-menu .menu-count { color: var(--muted); font-size: 12px; padding: 6px 0; }
 .table-column-menu .menu-error { color: #b91c1c; font-size: 12px; margin-top: 8px; }
 .ledger-group-rename { order: 1; flex: 0 0 auto; }
+.ledger-child-group { display: flex; align-items: flex-start; gap: 8px; }
+.ledger-child-group > input { flex: 0 0 auto; margin-top: 10px; }
+.ledger-child-group > .ledger-group-main { flex: 1; min-width: 260px; }
+.ledger-nested-group { padding: 8px 10px; border-left: 2px solid #cddafe; background: #fff; border-radius: 7px; }
 .transaction-table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 10px 0 12px; }
 table[data-transaction-table] > thead > tr > th:first-child { width: 42px; text-align: center; }
 table[data-transaction-table] > tbody > tr > td:first-child { text-align: center; }

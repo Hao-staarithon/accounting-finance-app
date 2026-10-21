@@ -711,6 +711,7 @@ def init_db() -> None:
             pass
         conn.commit()
         sync_existing_display_groups(conn)
+        upgrade_nested_display_groups(conn)
     finally:
         conn.close()
 
@@ -742,8 +743,63 @@ def clear_ledger_display_groups_for_tx(
         "SELECT group_id FROM ledger_display_group_items WHERE tx_id=?", (tx_id,)
     )]
     for group_id in group_ids:
-        conn.execute("DELETE FROM ledger_display_group_items WHERE group_id=?", (group_id,))
-        conn.execute("DELETE FROM ledger_display_groups WHERE id=?", (group_id,))
+        dissolve_display_group(conn, group_id)
+
+
+MAX_DISPLAY_GROUP_DEPTH = 32
+
+
+def upgrade_nested_display_groups(conn: sqlite3.Connection) -> None:
+    """Keep legacy groups intact while allowing ancestor/child leaf membership."""
+    migration = "nested_display_groups_v1"
+    if conn.execute("SELECT 1 FROM app_migrations WHERE name=?", (migration,)).fetchone():
+        return
+    if conn.execute("SELECT 1 FROM ledger_display_groups LIMIT 1").fetchone():
+        backup_path = os.path.join(os.path.dirname(DB_PATH),
+            f"bill_data_before_nested_groups_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
+        backup = sqlite3.connect(backup_path)
+        try:
+            conn.backup(backup)
+        finally:
+            backup.close()
+    conn.execute("BEGIN IMMEDIATE")
+    if conn.execute("SELECT 1 FROM app_migrations WHERE name=?", (migration,)).fetchone():
+        conn.rollback()
+        return
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(ledger_display_groups)")}
+    if "parent_group_id" not in columns:
+        conn.execute("ALTER TABLE ledger_display_groups ADD COLUMN parent_group_id INTEGER")
+    conn.execute("""CREATE TABLE ledger_display_group_items_nested (
+        group_id INTEGER NOT NULL, ledger_id INTEGER NOT NULL, tx_id INTEGER NOT NULL,
+        PRIMARY KEY(group_id, tx_id))""")
+    conn.execute("INSERT INTO ledger_display_group_items_nested SELECT group_id, ledger_id, tx_id FROM ledger_display_group_items")
+    conn.execute("DROP TABLE ledger_display_group_items")
+    conn.execute("ALTER TABLE ledger_display_group_items_nested RENAME TO ledger_display_group_items")
+    conn.execute("CREATE INDEX idx_display_group_tx ON ledger_display_group_items(tx_id)")
+    conn.execute("CREATE INDEX idx_display_group_parent ON ledger_display_groups(parent_group_id)")
+    conn.execute("INSERT INTO app_migrations(name) VALUES (?)", (migration,))
+    conn.commit()
+
+
+def load_display_group_tree(conn: sqlite3.Connection) -> Dict[int, Dict[str, Any]]:
+    groups = {row["id"]: {**dict(row), "ids": []} for row in conn.execute(
+        "SELECT id, ledger_id, title, parent_group_id FROM ledger_display_groups ORDER BY id DESC"
+    )}
+    for row in conn.execute("SELECT group_id, tx_id FROM ledger_display_group_items ORDER BY tx_id"):
+        if row["group_id"] in groups:
+            groups[row["group_id"]]["ids"].append(row["tx_id"])
+    return groups
+
+
+def dissolve_display_group(conn: sqlite3.Connection, group_id: int) -> None:
+    """Remove only this layer, promoting its children into its parent."""
+    row = conn.execute("SELECT parent_group_id FROM ledger_display_groups WHERE id=?", (group_id,)).fetchone()
+    if not row:
+        return
+    conn.execute("UPDATE ledger_display_groups SET parent_group_id=? WHERE parent_group_id=?",
+                 (row["parent_group_id"], group_id))
+    conn.execute("DELETE FROM ledger_display_group_items WHERE group_id=?", (group_id,))
+    conn.execute("DELETE FROM ledger_display_groups WHERE id=?", (group_id,))
 
 
 def display_group_targets(conn: sqlite3.Connection, tx_ids: List[int]) -> List[sqlite3.Row]:
@@ -1799,29 +1855,43 @@ def ledger_display_payload(
             item["ledger_ids"].sort()
     grouped_ids: set = set()
     display_items: List[Dict[str, Any]] = []
-    groups: Dict[int, Dict[str, Any]] = {}
-    for row in conn.execute(
-        """SELECT g.id, g.title, gi.tx_id
-           FROM ledger_display_groups g
-           JOIN ledger_display_group_items gi ON gi.group_id=g.id
-           ORDER BY g.id DESC, gi.tx_id""",
-    ):
-        group = groups.setdefault(row["id"], {"title": row["title"], "ids": []})
-        group["ids"].append(row["tx_id"])
-
+    groups = load_display_group_tree(conn)
+    child_ids: Dict[int, List[int]] = defaultdict(list)
     for group_id, group in groups.items():
-        ids = group["ids"]
-        if len(ids) < 2 or any(tx_id not in by_id or tx_id in grouped_ids for tx_id in ids):
-            continue
-        members = [by_id[tx_id] for tx_id in ids]
-        signed_cents = sum(
-            round(item["ledger_amount"] * 100) * (1 if item["direction"] == "支出" else -1)
-            for item in members
-        )
-        original_cents = sum(
-            round(item["original_amount"] * 100) * (1 if item["direction"] == "支出" else -1)
-            for item in members
-        )
+        if group["parent_group_id"] in groups:
+            child_ids[group["parent_group_id"]].append(group_id)
+    valid = {group_id for group_id, group in groups.items()
+             if group["ids"] and all(tx_id in by_id for tx_id in group["ids"])}
+    direct_owners = {}
+    for group_id, group in groups.items():
+        nested = {tx_id for child_id in child_ids[group_id] for tx_id in groups[child_id]["ids"]}
+        for tx_id in set(group["ids"]) - nested:
+            direct_owners.setdefault(tx_id, group_id)
+
+    def build_group(group_id: int, path: Tuple[int, ...] = ()) -> Optional[Dict[str, Any]]:
+        if group_id in path or len(path) >= MAX_DISPLAY_GROUP_DEPTH:
+            return None
+        group = groups[group_id]
+        members = [by_id[tx_id] for tx_id in group["ids"]]
+        member_ids = set(group["ids"])
+        children = []
+        nested_ids = set()
+        for child_id in child_ids[group_id]:
+            if child_id not in valid or not set(groups[child_id]["ids"]).issubset(member_ids):
+                continue
+            child = build_group(child_id, (*path, group_id))
+            if child and not nested_ids.intersection(groups[child_id]["ids"]):
+                children.append(child)
+                nested_ids.update(groups[child_id]["ids"])
+        children.extend({**item, "type": "transaction", "amount": item["ledger_amount"],
+                         "parent_group_id": group_id}
+                        for item in members if item["id"] not in nested_ids)
+        children.sort(key=lambda item: min(member["id"] for member in item["members"])
+                      if item["type"] == "group" else item["id"])
+        signed_cents = sum(round(item["ledger_amount"] * 100) *
+                           (1 if item["direction"] == "支出" else -1) for item in members)
+        original_cents = sum(round(item["original_amount"] * 100) *
+                             (1 if item["direction"] == "支出" else -1) for item in members)
         direction = "支出" if signed_cents > 0 else "收入" if signed_cents < 0 else "不计收支"
         anchor = next((item for item in members if item["direction"] == direction), members[0])
         latest = max(members, key=lambda item: (item.get("ts") or 0, item["id"]))
@@ -1829,25 +1899,34 @@ def ledger_display_payload(
         for item in members:
             category = item["category"] or "其他"
             category_counts[category] = category_counts.get(category, 0) + 1
-        top_categories = sorted(category_counts, key=lambda category: -category_counts[category])[:3]
-        display_items.append({
-            "type": "group", "group_id": group_id,
-            "id": f"g-{group_id}",
+        return {
+            "type": "group", "group_id": group_id, "id": f"g-{group_id}",
+            "parent_group_id": group["parent_group_id"],
             "title": group["title"] or f"交易组合（{len(members)} 笔）",
             "transaction_time": latest["transaction_time"], "ts": latest.get("ts"),
             "counterparty": anchor["counterparty"], "category": anchor["category"],
-            "top_categories": top_categories,
+            "top_categories": sorted(category_counts, key=lambda category: -category_counts[category])[:3],
             "direction": direction, "amount": round(abs(signed_cents) / 100, 2),
             "original_amount": round(abs(original_cents) / 100, 2),
             "original_direction": "支出" if original_cents > 0 else "收入" if original_cents < 0 else "不计收支",
-            "members": members,
-        })
-        grouped_ids.update(ids)
+            "members": members, "children": children,
+        }
+
+    for group_id, group in groups.items():
+        if group_id not in valid or group["parent_group_id"] in valid:
+            continue
+        if grouped_ids.intersection(group["ids"]):
+            continue
+        node = build_group(group_id)
+        if node:
+            display_items.append(node)
+            grouped_ids.update(group["ids"])
 
     for item in by_id.values():
         if item["id"] not in grouped_ids:
             display_items.append({
-                **item, "type": "transaction", "amount": item["ledger_amount"]
+                **item, "type": "transaction", "amount": item["ledger_amount"],
+                "parent_group_id": direct_owners.get(item["id"])
             })
     display_items.sort(key=lambda item: (item.get("ts") or 0, str(item["id"])), reverse=True)
     income_cents = sum(round(item["amount"] * 100) for item in display_items if item["direction"] == "收入")
@@ -2437,96 +2516,116 @@ def api_clear_ledger_amount(tx_id: int):
 
 @app.post("/api/ledgers/<int:ledger_id>/display-groups")
 def api_create_ledger_display_group(ledger_id: int):
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return api_error("组合设置无效")
+    parent_id = data.get("parent_group_id")
+    try:
+        if parent_id is not None:
+            if isinstance(parent_id, bool) or not isinstance(parent_id, (str, int)):
+                raise ValueError
+            parent_id = int(parent_id)
+            if not 1 <= parent_id <= 9223372036854775807:
+                raise ValueError
+    except (TypeError, ValueError):
+        return api_error("父组合 ID 无效")
     raw_items = data.get("item_ids", data.get("tx_ids"))
-    if not isinstance(raw_items, list) or not 2 <= len(raw_items) <= 200:
-        return api_error("请选择 2 至 200 项交易或组合")
+    minimum = 1 if parent_id is not None else 2
+    if not isinstance(raw_items, list) or not minimum <= len(raw_items) <= 200:
+        return api_error(f"请选择 {minimum} 至 200 项同一层级的交易或组合")
     selected_tx_ids: List[int] = []
     selected_group_ids: List[int] = []
     try:
         for value in raw_items:
-            if isinstance(value, str) and value.startswith("g-"):
-                selected_group_ids.append(int(value[2:]))
-            else:
-                selected_tx_ids.append(int(value))
+            if isinstance(value, bool) or not isinstance(value, (str, int)):
+                raise ValueError
+            target = selected_group_ids if isinstance(value, str) and value.startswith("g-") else selected_tx_ids
+            number = int(value[2:] if target is selected_group_ids else value)
+            if not 1 <= number <= 9223372036854775807:
+                raise ValueError
+            target.append(number)
     except (TypeError, ValueError):
         return api_error("交易或组合 ID 无效")
-    if (any(tx_id <= 0 for tx_id in selected_tx_ids)
-            or any(group_id <= 0 for group_id in selected_group_ids)
-            or len(set(selected_tx_ids)) != len(selected_tx_ids)
-            or len(set(selected_group_ids)) != len(selected_group_ids)):
-        return api_error("请选择不同的有效交易或组合")
-    title = str(data.get("title") or "").strip()[:80]
+    if len(set(selected_tx_ids)) != len(selected_tx_ids) or len(set(selected_group_ids)) != len(selected_group_ids):
+        return api_error("请选择不同的交易或组合")
+    title = str(data.get("title") or "").strip()
+    if len(title) > 80:
+        return api_error("组合名称最多 80 个字")
     conn = get_db()
     try:
-        ledger = conn.execute(
-            "SELECT * FROM ledgers WHERE id=? AND deleted=0", (ledger_id,)
-        ).fetchone()
+        conn.execute("BEGIN IMMEDIATE")
+        ledger = conn.execute("SELECT id FROM ledgers WHERE id=? AND deleted=0", (ledger_id,)).fetchone()
         if not ledger:
             return api_error("账本不存在", 404)
+        groups = load_display_group_tree(conn)
+        if parent_id is not None and parent_id not in groups:
+            return api_error("父组合不存在，请刷新后重试", 404)
+        ancestors = []
+        current = parent_id
+        while current is not None:
+            if current in ancestors or current not in groups or len(ancestors) >= MAX_DISPLAY_GROUP_DEPTH:
+                return api_error("组合层级无效或过深")
+            ancestors.append(current)
+            current = groups[current]["parent_group_id"]
         ids = list(selected_tx_ids)
+        allowed = set(ancestors)
+
+        def include_subtree(group_id: int, path: Tuple[int, ...] = ()) -> int:
+            if group_id in path or len(path) >= MAX_DISPLAY_GROUP_DEPTH:
+                raise ValueError
+            allowed.add(group_id)
+            heights = [include_subtree(child_id, (*path, group_id)) for child_id, child in groups.items()
+                       if child["parent_group_id"] == group_id]
+            return 1 + max(heights, default=0)
+
+        heights = []
         for group_id in selected_group_ids:
-            group = conn.execute(
-                "SELECT id FROM ledger_display_groups WHERE id=?",
-                (group_id,),
-            ).fetchone()
-            if not group:
+            group = groups.get(group_id)
+            if not group or not group["ids"]:
                 return api_error("选中的组合已失效")
-            members = [row["tx_id"] for row in conn.execute(
-                "SELECT tx_id FROM ledger_display_group_items WHERE group_id=? ORDER BY tx_id",
-                (group_id,),
-            )]
-            if len(members) < 2:
-                return api_error("选中的组合已失效")
-            ids.extend(members)
-        if len(ids) > 200 or len(set(ids)) != len(ids):
-            return api_error("组合最多包含 200 笔不同的原始交易")
-        placeholders = ", ".join("?" for _ in ids)
+            if group["parent_group_id"] != parent_id:
+                return api_error("请选择同一父组合内、同一层级的条目", 409)
+            ids.extend(group["ids"])
+            try:
+                heights.append(include_subtree(group_id))
+            except ValueError:
+                return api_error("组合层级无效或过深")
+        if len(ancestors) + 1 + max(heights, default=0) > MAX_DISPLAY_GROUP_DEPTH:
+            return api_error(f"组合最多支持 {MAX_DISPLAY_GROUP_DEPTH} 层")
+        if not ids or len(ids) > 200 or len(set(ids)) != len(ids):
+            return api_error("组合最多包含 200 笔不同的原始交易，请勿同时选择组合及其成员")
+        if parent_id is not None and not set(ids).issubset(groups[parent_id]["ids"]):
+            return api_error("选中的交易不在当前父组合内", 409)
+        conflicting = [group for group_id, group in groups.items()
+                       if group_id not in allowed and set(ids).intersection(group["ids"])]
+        if conflicting:
+            names = {row["id"]: row["name"] for row in conn.execute("SELECT id, name FROM ledgers")}
+            return api_error("交易已有其他组合，请选择组合本身或在该组合内建立子组合：" +
+                             "、".join(dict.fromkeys(names.get(group["ledger_id"], "未知账本") for group in conflicting)), 409)
+        placeholders = ",".join("?" for _ in ids)
         rows = conn.execute(
             f"""SELECT t.id, t.direction FROM transactions t
-               JOIN effective_transaction_ledgers m ON m.tx_id=t.id AND m.ledger_id=?
-               WHERE t.id IN ({placeholders}) AND t.is_deleted=0
-                 AND t.is_duplicate=0 AND t.count_in_expense=1""",
+                JOIN effective_transaction_ledgers m ON m.tx_id=t.id AND m.ledger_id=?
+                WHERE t.id IN ({placeholders}) AND t.is_deleted=0 AND t.is_duplicate=0 AND t.count_in_expense=1""",
             (ledger_id, *ids),
         ).fetchall()
         if len(rows) != len(ids) or any(row["direction"] not in ("支出", "收入") for row in rows):
             return api_error("只能组合当前账本中有效的收入或支出交易")
-        replaced_group_ids = [row["group_id"] for row in conn.execute(
-            f"""SELECT DISTINCT group_id FROM ledger_display_group_items
-                 WHERE tx_id IN ({placeholders})""", tuple(ids)
-        )]
-        conflicting = set(replaced_group_ids) - set(selected_group_ids)
-        if conflicting:
-            names = [row["name"] for row in conn.execute(
-                f"""SELECT DISTINCT l.name FROM ledger_display_groups g
-                    JOIN ledgers l ON l.id=g.ledger_id
-                    WHERE g.id IN ({','.join('?' for _ in conflicting)})""",
-                tuple(conflicting),
-            )]
-            return api_error("这些交易已有其他组合，请先在账本中拆开：" + "、".join(names), 409)
         targets = display_group_targets(conn, ids)
         added = add_missing_group_members(conn, ids, targets)
-        for group_id in replaced_group_ids:
-            conn.execute("DELETE FROM ledger_display_group_items WHERE group_id=?", (group_id,))
-            conn.execute("DELETE FROM ledger_display_groups WHERE id=?", (group_id,))
-        group_id = conn.execute(
-            "INSERT INTO ledger_display_groups(ledger_id, title) VALUES (?, ?)",
-            (ledger_id, title),
-        ).lastrowid
-        conn.executemany(
-            "INSERT INTO ledger_display_group_items(group_id, ledger_id, tx_id) VALUES (?, ?, ?)",
-            [(group_id, ledger_id, tx_id) for tx_id in ids],
-        )
+        group_id = conn.execute("INSERT INTO ledger_display_groups(ledger_id, title, parent_group_id) VALUES (?, ?, ?)",
+                                (ledger_id, title, parent_id)).lastrowid
+        conn.executemany("INSERT INTO ledger_display_group_items(group_id, ledger_id, tx_id) VALUES (?, ?, ?)",
+                         [(group_id, ledger_id, tx_id) for tx_id in ids])
+        conn.executemany("UPDATE ledger_display_groups SET parent_group_id=? WHERE id=?",
+                         [(group_id, child_id) for child_id in selected_group_ids])
         conn.commit()
-        return jsonify({
-            "ok": True, "group_id": group_id,
-            "combined_group_ids": selected_group_ids,
-            "affected_ledgers": [{"id": row["id"], "name": row["name"],
-                                  "added": added[row["id"]]} for row in targets],
-        })
+        return jsonify({"ok": True, "group_id": group_id, "parent_group_id": parent_id,
+            "combined_group_ids": selected_group_ids, "ancestor_group_ids": ancestors,
+            "affected_ledgers": [{"id": row["id"], "name": row["name"], "added": added[row["id"]]} for row in targets]})
     except sqlite3.IntegrityError:
         conn.rollback()
-        return api_error("交易已在其他展示组合中")
+        return api_error("组合成员发生冲突，请刷新后重试", 409)
     finally:
         conn.close()
 
@@ -2559,8 +2658,7 @@ def api_delete_ledger_display_group(group_id: int):
         row = conn.execute("SELECT id FROM ledger_display_groups WHERE id=?", (group_id,)).fetchone()
         if not row:
             return api_error("展示组合不存在", 404)
-        conn.execute("DELETE FROM ledger_display_group_items WHERE group_id=?", (group_id,))
-        conn.execute("DELETE FROM ledger_display_groups WHERE id=?", (group_id,))
+        dissolve_display_group(conn, group_id)
         conn.commit()
         return jsonify({"ok": True})
     finally:

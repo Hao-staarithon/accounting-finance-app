@@ -1284,11 +1284,12 @@
         <h2 id="ledger-display-title" style="margin:0;">账本明细</h2>
         <button id="btn-ledger-display-close" class="modal-close" aria-label="关闭账本明细">×</button>
       </div>
-      <p class="section-lead">点击账本金额可修改；选中交易或已有组合，可继续组合显示净额。原始流水和导入去重保持原样。</p>
+      <p class="section-lead">点击账本金额可修改；勾选同一层级的交易或组合可继续组合。展开后可建立命名子组合，原有组合层级会保留。</p>
       <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
         <span id="ledger-selected-count" class="small">未选择交易</span>
         <div class="row">
           <button id="btn-ledger-clear-filter" class="hidden">清除筛选和排序</button>
+          <button id="btn-ledger-selection-clear" disabled>取消选择</button>
           <button id="btn-ledger-batch" disabled>批量设置分类/账本</button>
           <button id="btn-ledger-group" class="primary" disabled>组合显示</button>
         </div>
@@ -1328,7 +1329,7 @@
       </div>
       <p id="ledger-group-preview" class="muted"></p>
       <p id="ledger-group-impact" class="small"></p>
-      <p class="small">组合会同步到已有任一成员的独立账本，缺少的交易会自动加入；原始交易仍保留，可随时拆开展示。</p>
+      <p class="small">已有组合会保留在新组合内；拆开只移除当前这一层。组合会同步到已有成员的独立账本，缺少的交易会自动加入。</p>
       <label class="field-label" for="ledger-group-title">组合名称</label>
       <input id="ledger-group-title" type="text" maxlength="80" placeholder="例如：考研备考、十月生活费" style="width:100%;margin-top:8px;">
       <div class="row" style="justify-content:flex-end;margin-top:16px;">
@@ -1591,32 +1592,92 @@
     $("#btn-ledger-total").addEventListener("click", () => setLedgerViewMode("total"));
     $("#btn-ledger-monthly").addEventListener("click", () => setLedgerViewMode("monthly"));
     $("#ledger-month").addEventListener("change", loadLedgerStats);
-    function updateLedgerSelection() {
-      const count = ledgerSelectedIds.size;
-      const sources = selectedLedgerSourceIds().length;
-      $("#ledger-selected-count").textContent = sources ? `已选 ${sources} 笔原始流水${ledgerSelectedMembers.size ? " · 含组合内单笔" : ` · ${count} 项`}` : "未选择交易";
-      $("#btn-ledger-group").disabled = count < 2 || count > 200 || sources > 200 || ledgerSelectedMembers.size > 0;
-      $("#btn-ledger-group").textContent = count ? `组合显示选中 ${count} 项` : "组合显示";
-      $("#btn-ledger-batch").disabled = !sources;
-      $$("#ledger-display-body .ledger-row-check").forEach(input => {
-        const group = ledgerDisplayItems.find(item => String(item.id) === input.value && item.type === "group");
-        input.checked = ledgerSelectedIds.has(input.value);
-        input.indeterminate = !input.checked && !!group?.members.some(member => ledgerSelectedMembers.has(member.id));
-      });
-      $$("#ledger-display-body .ledger-member-check").forEach(input => {
-        input.checked = ledgerSelectedIds.has(input.dataset.groupId) || ledgerSelectedMembers.has(Number(input.value));
-      });
-      const boxes = $$("#ledger-display-body .ledger-row-check");
-      $("#ledger-check-all").checked = boxes.length > 0 && boxes.every(input => input.checked);
-      $("#ledger-check-all").indeterminate = !$("#ledger-check-all").checked && boxes.some(input => input.checked || input.indeterminate);
+    let ledgerGroupDraft = null;
+    const ledgerGroupsToExpand = new Set();
+    function ledgerGroupChildren(group) {
+      return group.children || (group.members || []).map(member => ({...member, type:"transaction", amount:member.ledger_amount, parent_group_id:group.group_id}));
+    }
+    function ledgerNodeMap(items = ledgerDisplayItems) {
+      const nodes = new Map();
+      const visit = item => {
+        nodes.set(String(item.id), item);
+        if (item.type === "group") ledgerGroupChildren(item).forEach(visit);
+      };
+      items.forEach(visit);
+      return nodes;
+    }
+    function ledgerSelectedNodes() {
+      const nodes = ledgerNodeMap();
+      return [...new Set([...ledgerSelectedIds, ...[...ledgerSelectedMembers].map(String)])].map(id=>nodes.get(id)).filter(Boolean);
     }
     function selectedLedgerSourceIds() {
-      const ids = new Set(ledgerSelectedMembers);
-      for (const item of ledgerDisplayItems) {
-        if (!ledgerSelectedIds.has(String(item.id))) continue;
-        for (const member of item.type === "group" ? item.members : [item]) ids.add(member.id);
+      return [...new Set(ledgerSelectedNodes().flatMap(item=>item.type === "group" ? item.members.map(member=>member.id) : [item.id]))];
+    }
+    function ledgerGroupingSelection() {
+      const items = ledgerSelectedNodes();
+      const parents = new Set(items.map(item=>item.parent_group_id ?? null));
+      const parent = parents.size === 1 ? [...parents][0] : null;
+      const count = selectedLedgerSourceIds().length;
+      const valid = parents.size === 1 && items.length >= (parent == null ? 2 : 1) && items.length <= 200 && count <= 200;
+      return {items, parent, count, valid};
+    }
+    function ledgerNodeIsSelected(node, nodes) {
+      if (ledgerSelectedIds.has(String(node.id)) || ledgerSelectedMembers.has(node.id)) return true;
+      let parent = node.parent_group_id;
+      const seen = new Set();
+      while (parent != null && !seen.has(parent)) {
+        if (ledgerSelectedIds.has(`g-${parent}`)) return true;
+        seen.add(parent); parent = nodes.get(`g-${parent}`)?.parent_group_id;
       }
-      return [...ids];
+      return false;
+    }
+    function setLedgerNodeSelected(node, checked) {
+      const nodes = ledgerNodeMap();
+      const remove = item => { ledgerSelectedIds.delete(String(item.id)); ledgerSelectedMembers.delete(item.id); };
+      const add = item => {
+        if (item.type !== "group" && item.parent_group_id != null) ledgerSelectedMembers.add(item.id);
+        else ledgerSelectedIds.add(String(item.id));
+      };
+      const clearDescendants = item => {
+        if (item.type !== "group") return;
+        ledgerGroupChildren(item).forEach(child=>{ remove(child); clearDescendants(child); });
+      };
+      // When unchecking a descendant of a selected group, keep its siblings selected.
+      let parent = node.parent_group_id;
+      const path = [];
+      while (parent != null && nodes.has(`g-${parent}`)) {
+        const ancestor = nodes.get(`g-${parent}`); path.push(ancestor); parent = ancestor.parent_group_id;
+      }
+      path.reverse().forEach(ancestor=>{
+        if (ledgerSelectedIds.has(String(ancestor.id))) {
+          remove(ancestor); ledgerGroupChildren(ancestor).forEach(add);
+        }
+      });
+      remove(node); clearDescendants(node);
+      if (checked) add(node);
+      updateLedgerSelection();
+    }
+    function updateLedgerSelection() {
+      const nodes = ledgerNodeMap(), selection = ledgerGroupingSelection();
+      const sourceIds = new Set(selectedLedgerSourceIds());
+      const sources = sourceIds.size;
+      $("#ledger-selected-count").textContent = sources ? `已选 ${sources} 笔原始流水 · ${selection.items.length} 项${selection.items.some(item=>item.parent_group_id != null) ? " · 组内条目" : ""}` : "未选择交易";
+      $("#btn-ledger-group").disabled = !selection.valid;
+      $("#btn-ledger-group").title = sources && !selection.valid ? "请选择同一层级的条目，每个组合最多 200 笔原始流水" : "保留已有组合，创建新一层组合";
+      $("#btn-ledger-group").textContent = sources ? (selection.parent != null ? `建立子组合（${selection.items.length} 项）` : `组合显示选中 ${selection.items.length} 项`) : "组合显示";
+      $("#btn-ledger-batch").disabled = !sources;
+      $("#btn-ledger-selection-clear").disabled = !sources;
+      $$("#ledger-display-body .ledger-row-check, #ledger-display-body .ledger-member-check, #ledger-display-body .ledger-node-check").forEach(input=>{
+        const node = nodes.get(input.value);
+        input.checked = !!node && ledgerNodeIsSelected(node, nodes);
+        input.indeterminate = !!node && node.type === "group" && !input.checked && node.members.some(member=>sourceIds.has(member.id));
+      });
+      $$("#ledger-display-body .ledger-subgroup-trigger").forEach(button=>{
+        button.disabled = !selection.valid || selection.parent !== Number(button.dataset.parentGroupId);
+      });
+      const boxes = $$("#ledger-display-body .ledger-row-check");
+      $("#ledger-check-all").checked = boxes.length > 0 && boxes.every(input=>input.checked);
+      $("#ledger-check-all").indeterminate = !$("#ledger-check-all").checked && boxes.some(input=>input.checked || input.indeterminate);
     }
     function openLedgerDisplayModal(filter = null) {
       if (!currentLedger) return;
@@ -1675,10 +1736,9 @@
         ? ledgerDisplayItems.filter((item) => item.category === ledgerDisplayFilter.category && item.direction === ledgerDisplayFilter.direction)
         : ledgerDisplayItems;
       const visible = ledgerTableTools.setRows(base);
-      const visibleIds = new Set(visible.map(item => String(item.id)));
-      ledgerSelectedIds = new Set([...ledgerSelectedIds].filter(id => visibleIds.has(id)));
-      const memberIds = new Set(visible.filter(item => item.type === "group").flatMap(item => item.members.map(member => member.id)));
-      ledgerSelectedMembers = new Set([...ledgerSelectedMembers].filter(id => memberIds.has(id)));
+      const visibleNodes = ledgerNodeMap(visible);
+      ledgerSelectedIds = new Set([...ledgerSelectedIds].filter(id=>visibleNodes.has(id)));
+      ledgerSelectedMembers = new Set([...ledgerSelectedMembers].filter(id=>visibleNodes.has(String(id))));
       $("#btn-ledger-clear-filter").classList.toggle("hidden", !ledgerDisplayFilter && !ledgerTableTools.active);
       $("#ledger-table-status").textContent = `显示 ${visible.length} / ${ledgerDisplayItems.length} 项 · 点击表头筛选或排序`;
       const body = $("#ledger-display-body");
@@ -1686,24 +1746,17 @@
       const scrollTop = scroll.scrollTop, scrollLeft = scroll.scrollLeft;
       const focusedTx = body.contains(document.activeElement) && document.activeElement.matches("select[data-tx-id]")
         ? document.activeElement.dataset.txId : null;
+      const expanded = new Set($$("#ledger-display-body details[data-group-id][open]").map(details=>details.dataset.groupId));
+      ledgerGroupsToExpand.forEach(id=>expanded.add(String(id)));
       const oldRows = new Map([...body.children].map(row => [row.dataset.displayId, row]));
       const markup = visible.map((item) => {
         if (item.type === "group") {
           return `<tr class="ledger-group-row">
             <td><input type="checkbox" class="ledger-row-check" value="${item.id}"></td>
             <td class="mono">${dateTimeLines(item.transaction_time)}</td>
-            <td><div class="ledger-group-main"><button class="small ledger-group-rename" onclick="openLedgerGroupName(${item.group_id})" aria-label="重命名组合">重命名</button><details><summary>${esc(item.title)}<div class="small">${(item.members || []).length} 笔原始流水 · 展开金额明细</div></summary><div class="ledger-source-list">
-              ${(item.members || []).map((member) => `<div class="ledger-source-line">
-                <input type="checkbox" class="ledger-member-check" value="${member.id}" data-group-id="${item.id}" aria-label="选择组合内交易">
-                <span>${esc(member.counterparty || "交易")}</span>
-                <span class="mono">${esc(member.direction)} ¥${Number(member.original_amount || 0).toFixed(2)}</span>
-                <select class="ledger-category-select" style="width:${ledgerCategoryControlWidth(member.category)}px" data-tx-id="${member.id}" data-current-category="${esc(member.category || "其他")}" aria-label="修改原始交易分类" title="点击修改分类" onchange="chooseCategory(this, ${member.id}, 'ledger')">
-                  ${categoryOptions(member.category)}
-                </select>
-                <button class="small" onclick="openTransactionLedgers(${member.id})">账本（${(member.ledger_ids || []).length}）</button>
-                <span>账本金额 <button class="ledger-amount-trigger" data-tx-id="${member.id}" title="点击修改账本金额" aria-label="修改账本金额" onclick="openLedgerAmountEditor(${member.id})">¥${Number(member.ledger_amount || 0).toFixed(2)}</button></span>
-              </div>`).join("")}
-              <div class="ledger-source-actions"><button class="small" onclick="ungroupLedgerDisplay(${item.group_id})">拆开展示</button></div>
+            <td><div class="ledger-group-main"><button class="small ledger-group-rename" onclick="openLedgerGroupName(${item.group_id})" aria-label="重命名组合">重命名</button><details data-group-id="${item.group_id}"><summary>${esc(item.title)}<div class="small">${(item.members || []).length} 笔原始流水 · 展开金额明细</div></summary><div class="ledger-source-list">
+              ${ledgerGroupChildren(item).map(child=>renderLedgerChild(child)).join("")}
+              ${ledgerGroupActions(item)}
             </div></details></div></td>
             <td><button class="ledger-category-summary" title="展开后逐笔修改分类" onclick="this.closest('tr').querySelector('details').open=true">${(item.top_categories || [item.category || "其他"]).map(esc).join(" · ")}</button></td>
             <td class="small">--</td>
@@ -1734,8 +1787,7 @@
           row = template.content.firstElementChild;
           row.dataset.displayId = id;
           row._ledgerMarkup = markup[index];
-          const details = row.querySelector("details");
-          if (details && old?.querySelector("details")?.open) details.open = true;
+          row.querySelectorAll("details[data-group-id]").forEach(details=>{ details.open = expanded.has(details.dataset.groupId); });
           if (old) { body.replaceChild(row, old); if (cursor === old) cursor = row; }
         }
         if (row === cursor) cursor = cursor.nextElementSibling;
@@ -1743,11 +1795,22 @@
         oldRows.delete(id);
       });
       oldRows.forEach(row => row.remove());
+      body.querySelectorAll("details[data-group-id]").forEach(details=>{ if (expanded.has(details.dataset.groupId)) details.open = true; });
+      ledgerGroupsToExpand.clear();
       if (focusedTx) body.querySelector(`select[data-tx-id="${focusedTx}"]`)?.focus({ preventScroll: true });
       scroll.scrollTop = scrollTop; scroll.scrollLeft = scrollLeft;
       $("#ledger-display-empty").textContent = ledgerDisplayItems.length ? "没有符合筛选条件的交易" : "这个账本还没有交易";
       $("#ledger-display-empty").classList.toggle("hidden", visible.length > 0);
       updateLedgerSelection();
+    }
+    function ledgerGroupActions(group) {
+      return `<div class="ledger-source-actions"><button class="small ledger-subgroup-trigger" data-parent-group-id="${group.group_id}" onclick="openLedgerGroupEditor(${group.group_id})" disabled>组合组内所选</button><button class="small" onclick="ungroupLedgerDisplay(${group.group_id})">拆开此层</button></div>`;
+    }
+    function renderLedgerChild(item) {
+      if (item.type === "group") {
+        return `<div class="ledger-child-group"><input type="checkbox" class="ledger-node-check" value="${item.id}" aria-label="选择子组合"><div class="ledger-group-main ledger-nested-group"><button class="small ledger-group-rename" onclick="openLedgerGroupName(${item.group_id})">重命名</button><details data-group-id="${item.group_id}"><summary>${esc(item.title)}<div class="small">${item.members.length} 笔原始流水 · ${esc(item.direction)} ¥${Number(item.amount).toFixed(2)}</div></summary><div class="ledger-source-list">${ledgerGroupChildren(item).map(renderLedgerChild).join("")}${ledgerGroupActions(item)}</div></details></div></div>`;
+      }
+      return `<div class="ledger-source-line"><input type="checkbox" class="ledger-member-check" value="${item.id}" data-group-id="g-${item.parent_group_id}" aria-label="选择组合内交易"><span>${esc(item.counterparty || "交易")}</span><span class="mono">${esc(item.direction)} ¥${Number(item.original_amount || 0).toFixed(2)}</span><select class="ledger-category-select" style="width:${ledgerCategoryControlWidth(item.category)}px" data-tx-id="${item.id}" data-current-category="${esc(item.category || "其他")}" aria-label="修改原始交易分类" onchange="chooseCategory(this, ${item.id}, 'ledger')">${categoryOptions(item.category)}</select><button class="small" onclick="openTransactionLedgers(${item.id})">账本（${(item.ledger_ids || []).length}）</button><span>账本金额 <button class="ledger-amount-trigger" data-tx-id="${item.id}" onclick="openLedgerAmountEditor(${item.id})">¥${Number(item.ledger_amount || 0).toFixed(2)}</button></span></div>`;
     }
     function filterLedgerDisplay(category, direction) {
       openLedgerDisplayModal({ category, direction });
@@ -1774,26 +1837,13 @@
       $("#ledger-display-title").textContent = `${currentLedger} · 账本明细`;
       renderLedgerDisplay();
     });
-    $("#ledger-display-body").addEventListener("change", (event) => {
-      if (event.target.classList.contains("ledger-member-check")) {
-        const input = event.target, id = Number(input.value);
-        const group = ledgerDisplayItems.find(item => String(item.id) === input.dataset.groupId);
-        if (!group) return;
-        if (ledgerSelectedIds.delete(String(group.id))) group.members.forEach(member => ledgerSelectedMembers.add(member.id));
-        if (input.checked) ledgerSelectedMembers.add(id); else ledgerSelectedMembers.delete(id);
-        if (group.members.every(member => ledgerSelectedMembers.has(member.id))) {
-          ledgerSelectedIds.add(String(group.id));
-          group.members.forEach(member => ledgerSelectedMembers.delete(member.id));
-        }
-        updateLedgerSelection();
-        return;
-      }
-      if (!event.target.classList.contains("ledger-row-check")) return;
-      const id = event.target.value;
-      if (event.target.checked) ledgerSelectedIds.add(id); else ledgerSelectedIds.delete(id);
-      const group = ledgerDisplayItems.find(item => String(item.id) === id && item.type === "group");
-      if (group) group.members.forEach(member => ledgerSelectedMembers.delete(member.id));
-      updateLedgerSelection();
+    $("#ledger-display-body").addEventListener("change", event=>{
+      if (!event.target.matches(".ledger-row-check, .ledger-member-check, .ledger-node-check")) return;
+      const node = ledgerNodeMap().get(event.target.value);
+      if (node) setLedgerNodeSelected(node, event.target.checked);
+    });
+    $("#btn-ledger-selection-clear").addEventListener("click", ()=>{
+      ledgerSelectedIds.clear(); ledgerSelectedMembers.clear(); updateLedgerSelection();
     });
     $("#ledger-check-all").addEventListener("change", event => {
       ledgerSelectedIds.clear(); ledgerSelectedMembers.clear();
@@ -1859,53 +1909,54 @@
       if (event.key === "Enter") $("#btn-ledger-amount-save").click();
     });
 
-    $("#btn-ledger-group").addEventListener("click", () => {
-      if (ledgerSelectedIds.size < 2 || ledgerSelectedIds.size > 200) return;
-      const members = Array.from(ledgerSelectedIds).map((id) => ledgerDisplayItems.find((item) => String(item.id) === id));
-      const sourceCount = members.reduce((sum, item) => sum + (item.type === "group" ? item.members.length : 1), 0);
-      if (sourceCount > 200) { showFlash("组合最多包含 200 笔原始流水", true); return; }
-      const sources = members.flatMap((item) => item.type === "group" ? item.members : [item]);
-      const affected = allLedgers.filter((ledger) => !ledger.deleted && sources.some((item) =>
-        (item.ledger_ids || []).includes(ledger.id)));
-      $("#ledger-group-impact").textContent = "会影响：" + affected.map((ledger) => {
-        const missing = sources.filter((item) => !(item.ledger_ids || []).includes(ledger.id)).length;
+    function openLedgerGroupEditor(expectedParent = undefined) {
+      const selection = ledgerGroupingSelection();
+      if (!selection.valid || (expectedParent !== undefined && selection.parent !== expectedParent)) {
+        showFlash("请勾选同一层级的交易或组合；组内也可选择单笔建立子组合", true); return;
+      }
+      const sources = selection.items.flatMap(item=>item.type === "group" ? item.members : [item]);
+      const affected = allLedgers.filter(ledger=>!ledger.deleted && sources.some(item=>(item.ledger_ids || []).includes(ledger.id)));
+      $("#ledger-group-impact").textContent = "会影响：" + affected.map(ledger=>{
+        const missing = sources.filter(item=>!(item.ledger_ids || []).includes(ledger.id)).length;
         return ledger.name + (missing ? `（补入 ${missing} 笔）` : "");
       }).join("、");
-      const signedCents = members.reduce((sum, item) =>
-        sum + Math.round(Number(item.amount || 0) * 100) * (item.direction === "支出" ? 1 : -1), 0);
-      $("#ledger-group-preview").textContent = members.map((item) =>
-        `${item.type === "group" ? item.title : item.counterparty || "交易"}：${item.direction} ¥${Number(item.amount || 0).toFixed(2)}`
-      ).join("；") + `。组合净额：${signedCents === 0 ? "收支相抵" : signedCents > 0 ? "支出" : "收入"} ¥${(Math.abs(signedCents) / 100).toFixed(2)}`;
-      $("#ledger-group-title").value = `交易组合（${sourceCount} 笔）`;
+      const signedCents = sources.reduce((sum,item)=>sum+Math.round(Number(item.ledger_amount ?? item.amount ?? 0)*100)*(item.direction === "支出" ? 1 : -1),0);
+      $("#ledger-group-preview").textContent = selection.items.map(item=>`${item.type === "group" ? item.title : item.counterparty || "交易"}：${item.direction} ¥${Number(item.amount || 0).toFixed(2)}`).join("；") +
+        `。组合净额：${signedCents === 0 ? "收支相抵" : signedCents > 0 ? "支出" : "收入"} ¥${(Math.abs(signedCents)/100).toFixed(2)}。已有组合会保留为子组合。`;
+      ledgerGroupDraft = { item_ids:selection.items.map(item=>item.id), parent_group_id:selection.parent };
+      $("#ledger-group-title").value = `${selection.parent == null ? "交易组合" : "子组合"}（${selection.count} 笔）`;
       $("#ledger-group-modal").classList.remove("hidden");
-      $("#ledger-group-title").focus();
-      $("#ledger-group-title").select();
-    });
-    $("#btn-ledger-group-close").addEventListener("click", () => $("#ledger-group-modal").classList.add("hidden"));
-    $("#btn-ledger-group-save").addEventListener("click", async () => {
+      $("#ledger-group-title").focus(); $("#ledger-group-title").select();
+    }
+    $("#btn-ledger-group").addEventListener("click", ()=>openLedgerGroupEditor());
+    $("#btn-ledger-group-close").addEventListener("click", ()=>$("#ledger-group-modal").classList.add("hidden"));
+    $("#btn-ledger-group-save").addEventListener("click", async()=>{
       const ledger = currentLedgerItem();
-      if (!ledger || ledgerSelectedIds.size < 2 || ledgerSelectedIds.size > 200) return;
+      if (!ledger || !ledgerGroupDraft) return;
+      const button = $("#btn-ledger-group-save"); button.disabled = true;
       try {
         const result = await api(`/api/ledgers/${ledger.id}/display-groups`, {
-          method: "POST", body: { item_ids: Array.from(ledgerSelectedIds), title: $("#ledger-group-title").value.trim() }
+          method:"POST", body:{...ledgerGroupDraft, title:$("#ledger-group-title").value.trim()}
         });
         $("#ledger-group-modal").classList.add("hidden");
-        ledgerDisplayFilter = null;
+        ledgerSelectedIds.clear(); ledgerSelectedMembers.clear(); ledgerDisplayFilter = null;
+        ledgerGroupsToExpand.add(result.group_id); (result.ancestor_group_ids || []).forEach(id=>ledgerGroupsToExpand.add(id));
         $("#ledger-display-title").textContent = `${currentLedger} · 账本明细`;
-        showFlash(`已同步组合到：${(result.affected_ledgers || []).map((item) => item.name).join("、")}`);
+        showFlash(`组合已保存，原有层级保留；同步到：${(result.affected_ledgers || []).map(item=>item.name).join("、")}`);
         await loadLedgerStats();
-      } catch (err) { showFlash(err.message, true); }
+      } catch (err) { showFlash(err.message,true); }
+      finally { button.disabled = false; }
     });
     async function ungroupLedgerDisplay(groupId) {
       try {
         await api(`/api/ledger-display-groups/${groupId}`, { method: "DELETE" });
-        showFlash("已在所有相关账本拆开展示");
+        showFlash("已拆开这一层，内层组合继续保留；相关账本同步");
         await loadLedgerStats();
       } catch (err) { showFlash(err.message, true); }
     }
     let editingLedgerGroupId = null;
     function openLedgerGroupName(groupId) {
-      const group = ledgerDisplayItems.find(item => item.group_id === groupId);
+      const group = ledgerNodeMap().get(`g-${groupId}`);
       if (!group) return;
       editingLedgerGroupId = groupId;
       $("#ledger-group-name").value = group.title;
@@ -3824,6 +3875,7 @@
     window.setLedgerDisplayCategory = setLedgerDisplayCategory;
     window.openLedgerAmountEditor = openLedgerAmountEditor;
     window.ungroupLedgerDisplay = ungroupLedgerDisplay;
+    window.openLedgerGroupEditor = openLedgerGroupEditor;
     window.openLedgerGroupName = openLedgerGroupName;
     window.setLedgerDrillCategory = setLedgerDrillCategory;
     window.toggleLedgerDrillCount = toggleLedgerDrillCount;
