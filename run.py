@@ -8,13 +8,18 @@ import sys
 import ctypes
 from datetime import datetime
 
-# Qt WebEngine normally uses hardware acceleration. Keep the software fallback
-# available for graphics drivers that show unpainted areas in scrolling dialogs.
-if sys.platform == "win32" and "--software-rendering" in sys.argv:
-    sys.argv.remove("--software-rendering")
-    flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
-    if "--disable-gpu" not in flags.split():
-        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --disable-gpu".strip()
+# Use Chromium's software rasterizer by default on Windows to avoid driver
+# artifacts in long scrolling dialogs. The hardware path remains opt-in.
+hardware_rendering = "--hardware-rendering" in sys.argv
+software_rendering = "--software-rendering" in sys.argv or not hardware_rendering
+sys.argv[:] = [arg for arg in sys.argv if arg not in ("--hardware-rendering", "--software-rendering")]
+if sys.platform == "win32":
+    flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").split()
+    if software_rendering and "--disable-gpu" not in flags:
+        flags.append("--disable-gpu")
+    elif not software_rendering:
+        flags = [flag for flag in flags if flag != "--disable-gpu"]
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(flags)
 
 from PySide6.QtCore import QEvent, QObject, QRect, Qt, QUrl, Slot
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QMouseEvent, QPainter, QPen

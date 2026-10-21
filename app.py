@@ -3200,6 +3200,96 @@ def api_batch_delete():
         conn.close()
 
 
+@app.post("/api/transactions/batch-organize")
+def api_batch_organize():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return api_error("批量设置内容无效")
+    raw_ids = data.get("ids")
+    if not isinstance(raw_ids, list) or not 1 <= len(raw_ids) <= 5000:
+        return api_error("请选择 1 至 5000 笔原始交易")
+    try:
+        if any(isinstance(value, bool) or not isinstance(value, (int, str)) for value in raw_ids):
+            raise ValueError
+        ids = sorted({int(value) for value in raw_ids})
+        if any(not 1 <= value <= 9223372036854775807 for value in ids):
+            raise ValueError
+    except (TypeError, ValueError):
+        return api_error("交易 ID 无效")
+    category = data.get("category")
+    mode = data.get("ledger_mode", "keep")
+    if mode not in ("keep", "add", "replace", "remove"):
+        return api_error("账本设置方式无效")
+    if category is None and mode == "keep":
+        return api_error("请选择要修改的分类或账本")
+    ledger_ids: set = set()
+    if mode != "keep":
+        raw_ledgers = data.get("ledger_ids")
+        if not isinstance(raw_ledgers, list) or len(raw_ledgers) > 500:
+            return api_error("账本列表无效")
+        try:
+            if any(isinstance(value, bool) or not isinstance(value, (int, str)) for value in raw_ledgers):
+                raise ValueError
+            ledger_ids = {int(value) for value in raw_ledgers}
+            if any(value < 0 for value in ledger_ids):
+                raise ValueError
+        except (TypeError, ValueError):
+            return api_error("账本 ID 无效")
+        if not ledger_ids and mode != "replace":
+            return api_error("请至少选择一个账本")
+    conn = get_db()
+    try:
+        # Validate everything in one snapshot before changing any transaction.
+        conn.execute("BEGIN IMMEDIATE")
+        if category is not None and (not isinstance(category, str) or not is_valid_category(conn, category)):
+            return api_error("分类不合法")
+        names = {row["id"]: row["name"] for row in conn.execute(
+            "SELECT id, name FROM ledgers WHERE deleted=0"
+        )}
+        if any(value != 0 and value not in names for value in ledger_ids):
+            return api_error("包含不存在的独立账本")
+        rows = []
+        for offset in range(0, len(ids), 500):
+            chunk = ids[offset:offset + 500]
+            rows.extend(conn.execute(
+                f"SELECT id, branch, is_deleted, is_duplicate, count_in_expense FROM transactions "
+                f"WHERE id IN ({','.join('?' for _ in chunk)})", chunk
+            ).fetchall())
+        if len(rows) != len(ids):
+            return api_error("部分交易不存在，请刷新后重试", 404)
+        if any(row["is_deleted"] or row["is_duplicate"] or not row["count_in_expense"] for row in rows):
+            return api_error("选中的交易已删除、合并或移至不记录，请刷新后重试")
+        if category is not None:
+            conn.executemany(
+                "UPDATE transactions SET category=?, category_source='人工' WHERE id=?",
+                [(category, tx_id) for tx_id in ids],
+            )
+            conn.executemany("DELETE FROM ai_category_suggestions WHERE tx_id=?", [(tx_id,) for tx_id in ids])
+        if mode != "keep":
+            known_ledgers = {0, *names}
+            updates = ((tx_id, ledger_id, 0 if mode == "remove" else int(ledger_id in ledger_ids))
+                       for tx_id in ids for ledger_id in (known_ledgers if mode == "replace" else ledger_ids))
+            conn.executemany(
+                """INSERT INTO transaction_ledger_override(tx_id, ledger_id, included)
+                   VALUES (?, ?, ?) ON CONFLICT(tx_id, ledger_id)
+                   DO UPDATE SET included=excluded.included""", updates
+            )
+            # Keep the legacy primary ledger consistent when replacing membership.
+            if mode == "replace" and ledger_ids:
+                primary = 0 if 0 in ledger_ids else min(ledger_ids)
+                for row in rows:
+                    current = 0 if row["branch"] == "生活" else next(
+                        (key for key, name in names.items() if name == row["branch"]), None
+                    )
+                    if current not in ledger_ids:
+                        conn.execute("UPDATE transactions SET branch=? WHERE id=?",
+                                     ("生活" if primary == 0 else names[primary], row["id"]))
+        conn.commit()
+        return jsonify({"ok": True, "updated": len(ids)})
+    finally:
+        conn.close()
+
+
 @app.post("/api/transactions/batch-category")
 def api_batch_category():
     data = request.get_json(silent=True) or {}

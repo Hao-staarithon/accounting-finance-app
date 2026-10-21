@@ -93,7 +93,8 @@ CHECKS = r"""
     assert(!menu(), 'Escape closes column menu');
     console.log('PASS: main table sorting, search, range filters and visible selection');
 
-    openLedger('界面验证账本'); await loadLedgerStats(); openLedgerDisplayModal();
+    openLedger('界面验证账本'); await loadLedgerStats();
+    await until(() => ledgerDisplayItems.length === 5, 'ledger loaded'); openLedgerDisplayModal();
     header('.ledger-display-table','amount').click(); menu().querySelector('[data-sort="asc"]').click();
     equal(groupAmounts(), [5,12,30,50,100], 'ledger numeric sorting with group');
     document.querySelectorAll('.ledger-row-check').forEach(input => input.click());
@@ -127,6 +128,77 @@ CHECKS = r"""
     document.querySelector('#btn-ledger-group-save').click();
     await until(() => ledgerDisplayItems.some(item => item.title === '考研新增组合'), 'new named group saved');
     console.log('PASS: ledger filters, group member categories, rename and named creation');
+
+    await loadLedgers();
+    const groupRow = () => document.querySelector('#ledger-display-body [data-display-id="g-1"]');
+    groupRow().querySelector('details').open = true;
+    const scroll = document.querySelector('#ledger-display-modal .ledger-display-scroll');
+    scroll.style.maxHeight = '150px'; scroll.scrollTop = 40;
+    const savedScroll = scroll.scrollTop;
+    const savedDetails = groupRow().querySelector('details');
+    const unchangedRow = document.querySelector('#ledger-display-body [data-display-id="3"]');
+    await loadLedgerStats();
+    assert(groupRow().querySelector('details') === savedDetails, 'unchanged group DOM reused');
+    assert(savedDetails.open && scroll.scrollTop === savedScroll, 'unchanged refresh preserves expansion and scroll');
+    groupRow().querySelector('.ledger-member-check[value="1"]').click();
+    equal(selectedLedgerSourceIds(), [1], 'partial group member selection');
+    assert(groupRow().querySelector('.ledger-row-check').indeterminate, 'partial group shows indeterminate');
+    groupRow().querySelector('.ledger-member-check[value="2"]').click();
+    equal(selectedLedgerSourceIds().slice().sort(), [1,2], 'full group has distinct source ids');
+    assert(groupRow().querySelector('.ledger-row-check').checked, 'all members promote group selection');
+    groupRow().querySelector('.ledger-row-check').click();
+    assert(selectedLedgerSourceIds().length === 0, 'group deselect clears all members');
+    document.querySelector('#ledger-check-all').click();
+    assert(selectedLedgerSourceIds().length === 6, 'select all counts underlying source transactions');
+    document.querySelector('#ledger-check-all').click();
+    groupRow().querySelector('.ledger-row-check').click();
+    const target = (await api('/api/ledgers',{method:'POST',body:{name:'批量目标账本'}})).item.id;
+    await loadLedgers();
+    assert(selectedLedgerSourceIds().length === 2, 'refresh preserves selection');
+    document.querySelector('#btn-ledger-batch').click();
+    assert(batchOrganizeContext.ids.length === 2, 'whole group expands to original transactions');
+    document.querySelector('#batch-organize-category').value = '学习';
+    document.querySelector('#batch-organize-mode').value = 'add';
+    document.querySelector('#batch-organize-mode').dispatchEvent(new Event('change'));
+    document.querySelector(`#batch-organize-ledgers input[value="${target}"]`).click();
+    document.querySelector('#btn-batch-organize-save').click();
+    await until(() => document.querySelector('#batch-organize-modal').classList.contains('hidden') &&
+      ledgerDisplayItems.find(item=>item.group_id===1)?.members.every(member=>member.category==='学习'), 'batch group change');
+    assert(groupRow().querySelector('details').open, 'batch category keeps edited group expanded');
+    assert(document.querySelector('#ledger-display-body [data-display-id="3"]') === unchangedRow, 'unaffected rows not redrawn');
+    for (const id of [1,2]) {
+      const memberships = await api(`/api/transactions/${id}/ledgers`);
+      assert(memberships.ledger_ids.includes(target) && memberships.ledger_ids.length === 3, 'add preserves original ledgers');
+    }
+    assert(!(await api('/api/transactions/3/ledgers')).ledger_ids.includes(target), 'unselected transaction unaffected');
+
+    await loadLedgers();
+    const otherGroup = [...document.querySelectorAll('#ledger-display-body > tr')].find(row=>row.dataset.displayId!=='g-1');
+    const preservedScroll = scroll.scrollTop;
+    const oldFetch = window.fetch; let displayFetches = 0;
+    window.fetch = (...args) => { if (/\/api\/ledgers\/\d+\/display(?:\?|$)/.test(String(args[0]))) displayFetches++; return oldFetch(...args); };
+    const categorySelect = groupRow().querySelector('select[data-tx-id="1"]');
+    categorySelect.focus({preventScroll:true}); categorySelect.value='玩乐';
+    categorySelect.dispatchEvent(new Event('change',{bubbles:true}));
+    await until(()=>ledgerDisplayItems.find(item=>item.group_id===1)?.members.find(member=>member.id===1)?.category==='玩乐','single member edit');
+    await sleep(100); window.fetch = oldFetch;
+    assert(displayFetches === 1, 'one ledger fetch for a category edit');
+    assert(groupRow().querySelector('details').open, 'single edit preserves expansion');
+    assert(scroll.scrollTop === preservedScroll, 'single edit preserves scroll position');
+    assert(document.querySelector(`[data-display-id="${otherGroup.dataset.displayId}"]`) === otherGroup, 'single edit preserves unaffected DOM');
+    scroll.style.maxHeight = '';
+
+    switchPage('detail'); document.querySelector('#filter-branch').value='__all__'; await loadDetail();
+    for (const id of [3,4]) document.querySelector(`#detail-body .tx-check[value="${id}"]`).click();
+    document.querySelector('#btn-batch-organize').click();
+    document.querySelector('#batch-organize-category').value='购物';
+    document.querySelector('#batch-organize-mode').value='replace';
+    document.querySelector('#batch-organize-mode').dispatchEvent(new Event('change'));
+    document.querySelector(`#batch-organize-ledgers input[value="${target}"]`).click();
+    document.querySelector('#btn-batch-organize-save').click();
+    await until(()=>document.querySelector('#batch-organize-modal').classList.contains('hidden'),'main detail batch saved');
+    for (const id of [3,4]) equal((await api(`/api/transactions/${id}/ledgers`)).ledger_ids, [target], 'replace membership from main detail');
+    console.log('PASS: batch group/member selection, category and ledger changes, stable row refresh');
     window.__tableCheck = {done:true, success:true};
   } catch (error) {
     console.error(error.stack);

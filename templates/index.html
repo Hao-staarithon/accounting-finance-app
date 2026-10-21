@@ -494,7 +494,8 @@
     #ledger-display-modal .ledger-display-scroll,
     #combined-details-modal .ledger-display-scroll { flex: 1 1 auto; min-height: 0; max-height: none; overflow: auto; }
     #ledger-amount-modal, #ledger-group-modal, #ledger-group-name-modal { z-index: 62; }
-    #transaction-ledgers-modal, #detail-ledger-modal { z-index: 64; }
+    #transaction-ledgers-modal, #detail-ledger-modal, #batch-organize-modal { z-index: 64; }
+    #batch-organize-ledgers.hidden { display: none; }
     .api-manager-box { width: min(720px, 100%); }
     .api-provider-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 18px 0; }
     .api-provider-card { text-align: left; padding: 14px 16px; border: 1px solid var(--line); background: #fff; border-radius: 10px; }
@@ -552,7 +553,8 @@
     .ledger-source-list { display: grid; gap: 7px; margin-top: 9px; padding: 10px; background: #f8fafc; border-radius: 8px; }
     .ledger-source-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .ledger-group-row { background: transparent; }
-    .ledger-display-table { min-width: 900px; }
+    .ledger-display-table { min-width: 900px; border-collapse: separate; border-spacing: 0; }
+    .ledger-display-table tbody tr { transition: none; }
     .ledger-display-table td:first-child, .ledger-display-table th:first-child { width: 42px; text-align: center; }
     .ledger-category-select, .ledger-category-summary {
       appearance: none; -webkit-appearance: none; border: 0; border-bottom: 1px dotted #5470a8;
@@ -1281,12 +1283,13 @@
         <span id="ledger-selected-count" class="small">未选择交易</span>
         <div class="row">
           <button id="btn-ledger-clear-filter" class="hidden">清除筛选和排序</button>
+          <button id="btn-ledger-batch" disabled>批量设置分类/账本</button>
           <button id="btn-ledger-group" class="primary" disabled>组合显示</button>
         </div>
       </div>
       <div class="table-wrap ledger-display-scroll">
         <table class="ledger-display-table">
-            <thead><tr><th aria-label="选择交易"></th><th data-col="time">时间</th><th data-col="title">交易/组合</th><th data-col="category">分类</th><th data-col="branch">账本</th><th data-col="original_amount">原始金额</th><th data-col="amount">账本金额</th></tr></thead>
+            <thead><tr><th><input id="ledger-check-all" type="checkbox" aria-label="全选当前筛选结果"></th><th data-col="time">时间</th><th data-col="title">交易/组合</th><th data-col="category">分类</th><th data-col="branch">账本</th><th data-col="original_amount">原始金额</th><th data-col="amount">账本金额</th></tr></thead>
           <tbody id="ledger-display-body"></tbody>
         </table>
         <div id="ledger-display-empty" class="empty hidden">这个账本还没有交易</div>
@@ -1341,6 +1344,28 @@
     </div>
   </div>
 
+  <div id="batch-organize-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="batch-organize-heading">
+    <div class="modal-box" style="width:520px;">
+      <div class="row" style="justify-content:space-between;align-items:center;">
+        <h2 id="batch-organize-heading" style="margin:0;">批量设置分类和账本</h2>
+        <button id="btn-batch-organize-close" class="modal-close" aria-label="关闭批量设置">×</button>
+      </div>
+      <p id="batch-organize-count" class="small"></p>
+      <label class="field-label" for="batch-organize-category">统一分类</label>
+      <select id="batch-organize-category" style="width:100%;margin:8px 0 16px;"></select>
+      <label class="field-label" for="batch-organize-mode">账本归属</label>
+      <select id="batch-organize-mode" style="width:100%;margin:8px 0;">
+        <option value="keep">不修改账本</option>
+        <option value="add">加入勾选账本，保留其他归属</option>
+        <option value="replace">只保留勾选的账本</option>
+        <option value="remove">移出勾选账本</option>
+      </select>
+      <div id="batch-organize-ledgers" class="ledger-category-options hidden" style="max-height:240px;overflow:auto;"></div>
+      <p id="batch-organize-help" class="small">可只修改分类，也可同时设置账本。</p>
+      <div class="row" style="justify-content:flex-end;margin-top:16px;"><button class="primary" id="btn-batch-organize-save">应用到选中交易</button></div>
+    </div>
+  </div>
+
   <div id="confirm-modal" class="modal hidden">
     <div class="modal-box" style="width:420px;">
       <div class="row" style="justify-content:space-between; align-items:center;">
@@ -1359,6 +1384,7 @@
     <div class="selection-info">已选择 <strong id="selection-count">0</strong> 条</div>
     <div class="row">
       <button id="btn-batch-category">批量分类</button>
+      <button id="btn-batch-organize">分类/账本</button>
       <button class="danger" id="btn-batch-delete">批量删除</button>
       <button id="btn-selection-clear">取消选择</button>
     </div>
@@ -1518,7 +1544,7 @@
           .concat(active.map((l) => `<option value="${esc(l.name)}">${esc(l.name)}</option>`))
           .join("");
         branchSelect.value = currentBranch;
-        if (currentLedger) loadLedgerStats();
+        if (currentLedger) await loadLedgerStats();
       } catch (err) { showFlash(err.message, true); }
     }
     $("#sidebar-ledgers").addEventListener("click", (event) => {
@@ -1529,6 +1555,7 @@
     });
     let ledgerDisplayItems = [];
     let ledgerSelectedIds = new Set();
+    let ledgerSelectedMembers = new Set();
     let ledgerDisplayFilter = null;
     let editingLedgerAmountId = null;
     let ledgerViewMode = "total";
@@ -1559,18 +1586,36 @@
     $("#ledger-month").addEventListener("change", loadLedgerStats);
     function updateLedgerSelection() {
       const count = ledgerSelectedIds.size;
-      const sources = Array.from(ledgerSelectedIds).reduce((sum, id) => {
-        const item = ledgerDisplayItems.find((entry) => String(entry.id) === id);
-        return sum + (item?.type === "group" ? item.members.length : item ? 1 : 0);
-      }, 0);
-      $("#ledger-selected-count").textContent = count ? `已选 ${count} 项 · ${sources} 笔原始流水` : "未选择交易";
-      $("#btn-ledger-group").disabled = count < 2 || sources > 200;
+      const sources = selectedLedgerSourceIds().length;
+      $("#ledger-selected-count").textContent = sources ? `已选 ${sources} 笔原始流水${ledgerSelectedMembers.size ? " · 含组合内单笔" : ` · ${count} 项`}` : "未选择交易";
+      $("#btn-ledger-group").disabled = count < 2 || count > 200 || sources > 200 || ledgerSelectedMembers.size > 0;
       $("#btn-ledger-group").textContent = count ? `组合显示选中 ${count} 项` : "组合显示";
+      $("#btn-ledger-batch").disabled = !sources;
+      $$("#ledger-display-body .ledger-row-check").forEach(input => {
+        const group = ledgerDisplayItems.find(item => String(item.id) === input.value && item.type === "group");
+        input.checked = ledgerSelectedIds.has(input.value);
+        input.indeterminate = !input.checked && !!group?.members.some(member => ledgerSelectedMembers.has(member.id));
+      });
+      $$("#ledger-display-body .ledger-member-check").forEach(input => {
+        input.checked = ledgerSelectedIds.has(input.dataset.groupId) || ledgerSelectedMembers.has(Number(input.value));
+      });
+      const boxes = $$("#ledger-display-body .ledger-row-check");
+      $("#ledger-check-all").checked = boxes.length > 0 && boxes.every(input => input.checked);
+      $("#ledger-check-all").indeterminate = !$("#ledger-check-all").checked && boxes.some(input => input.checked || input.indeterminate);
+    }
+    function selectedLedgerSourceIds() {
+      const ids = new Set(ledgerSelectedMembers);
+      for (const item of ledgerDisplayItems) {
+        if (!ledgerSelectedIds.has(String(item.id))) continue;
+        for (const member of item.type === "group" ? item.members : [item]) ids.add(member.id);
+      }
+      return [...ids];
     }
     function openLedgerDisplayModal(filter = null) {
       if (!currentLedger) return;
       ledgerDisplayFilter = filter;
       ledgerSelectedIds.clear();
+      ledgerSelectedMembers.clear();
       $("#ledger-display-title").textContent = filter
         ? `${currentLedger} · ${filter.category} · ${filter.direction}明细`
         : `${currentLedger} · 账本明细`;
@@ -1579,15 +1624,17 @@
     }
     $("#btn-ledger-display").addEventListener("click", () => openLedgerDisplayModal());
     $("#btn-ledger-display-close").addEventListener("click", () => $("#ledger-display-modal").classList.add("hidden"));
+    let ledgerLoadSequence = 0;
     async function loadLedgerStats() {
       const ledger = currentLedgerItem();
       if (!ledger) return;
+      const sequence = ++ledgerLoadSequence;
       $("#ledger-page-title").textContent = currentLedger;
       try {
         const month = ledgerViewMode === "monthly" ? $("#ledger-month").value : "";
         const data = await api(`/api/ledgers/${ledger.id}/display${month ? `?month=${encodeURIComponent(month)}` : ""}`);
+        if (sequence !== ledgerLoadSequence || ledger.id !== currentLedgerItem()?.id) return;
         ledgerDisplayItems = data.items || [];
-        ledgerSelectedIds = new Set();
         const incomeMap = {}, expenseMap = {};
         for (const item of ledgerDisplayItems) {
           const key = item.category || "其他";
@@ -1623,15 +1670,24 @@
       const visible = ledgerTableTools.setRows(base);
       const visibleIds = new Set(visible.map(item => String(item.id)));
       ledgerSelectedIds = new Set([...ledgerSelectedIds].filter(id => visibleIds.has(id)));
+      const memberIds = new Set(visible.filter(item => item.type === "group").flatMap(item => item.members.map(member => member.id)));
+      ledgerSelectedMembers = new Set([...ledgerSelectedMembers].filter(id => memberIds.has(id)));
       $("#btn-ledger-clear-filter").classList.toggle("hidden", !ledgerDisplayFilter && !ledgerTableTools.active);
       $("#ledger-table-status").textContent = `显示 ${visible.length} / ${ledgerDisplayItems.length} 项 · 点击表头筛选或排序`;
-      $("#ledger-display-body").innerHTML = visible.map((item) => {
+      const body = $("#ledger-display-body");
+      const scroll = body.closest(".ledger-display-scroll");
+      const scrollTop = scroll.scrollTop, scrollLeft = scroll.scrollLeft;
+      const focusedTx = body.contains(document.activeElement) && document.activeElement.matches("select[data-tx-id]")
+        ? document.activeElement.dataset.txId : null;
+      const oldRows = new Map([...body.children].map(row => [row.dataset.displayId, row]));
+      const markup = visible.map((item) => {
         if (item.type === "group") {
           return `<tr class="ledger-group-row">
-            <td><input type="checkbox" class="ledger-row-check" value="${item.id}" ${ledgerSelectedIds.has(String(item.id)) ? "checked" : ""}></td>
+            <td><input type="checkbox" class="ledger-row-check" value="${item.id}"></td>
             <td class="mono">${dateTimeLines(item.transaction_time)}</td>
             <td><div class="ledger-group-main"><button class="small ledger-group-rename" onclick="openLedgerGroupName(${item.group_id})" aria-label="重命名组合">重命名</button><details><summary>${esc(item.title)}<div class="small">${(item.members || []).length} 笔原始流水 · 展开金额明细</div></summary><div class="ledger-source-list">
               ${(item.members || []).map((member) => `<div class="ledger-source-line">
+                <input type="checkbox" class="ledger-member-check" value="${member.id}" data-group-id="${item.id}" aria-label="选择组合内交易">
                 <span>${esc(member.counterparty || "交易")}</span>
                 <span class="mono">${esc(member.direction)} ¥${Number(member.original_amount || 0).toFixed(2)}</span>
                 <select class="ledger-category-select" style="width:${ledgerCategoryControlWidth(member.category)}px" data-tx-id="${member.id}" data-current-category="${esc(member.category || "其他")}" aria-label="修改原始交易分类" title="点击修改分类" onchange="chooseCategory(this, ${member.id}, 'ledger')">
@@ -1649,7 +1705,7 @@
           </tr>`;
         }
         return `<tr>
-          <td><input type="checkbox" class="ledger-row-check" value="${item.id}" ${ledgerSelectedIds.has(String(item.id)) ? "checked" : ""}></td>
+          <td><input type="checkbox" class="ledger-row-check" value="${item.id}"></td>
           <td class="mono">${dateTimeLines(item.transaction_time)}</td>
           <td>${esc(item.counterparty || "交易")}<div class="small">${esc(item.description || "")}</div></td>
           <td><select class="ledger-category-select" style="width:${ledgerCategoryControlWidth(item.category)}px" data-tx-id="${item.id}" data-current-category="${esc(item.category || "其他")}" aria-label="修改交易分类" title="点击修改分类" onchange="chooseCategory(this, ${item.id}, 'ledger')">
@@ -1659,7 +1715,29 @@
           <td class="mono nowrap">${esc(item.direction)} ¥${Number(item.original_amount || 0).toFixed(2)}</td>
           <td class="amount ${dirClass[item.direction] || "neutral"}"><button class="ledger-amount-trigger" data-tx-id="${item.id}" title="点击修改账本金额" aria-label="修改账本金额" onclick="openLedgerAmountEditor(${item.id})">¥${Number(item.amount || 0).toFixed(2)}</button>${item.ledger_amount_adjusted ? '<div class="small">已调整</div>' : ""}</td>
         </tr>`;
-      }).join("");
+      });
+      // Reuse unchanged rows, and preserve an edited group's expansion and scroll.
+      let cursor = body.firstElementChild;
+      visible.forEach((item, index) => {
+        const id = String(item.id), old = oldRows.get(id);
+        let row = old;
+        if (!row || row._ledgerMarkup !== markup[index]) {
+          const template = document.createElement("template");
+          template.innerHTML = markup[index];
+          row = template.content.firstElementChild;
+          row.dataset.displayId = id;
+          row._ledgerMarkup = markup[index];
+          const details = row.querySelector("details");
+          if (details && old?.querySelector("details")?.open) details.open = true;
+          if (old) { body.replaceChild(row, old); if (cursor === old) cursor = row; }
+        }
+        if (row === cursor) cursor = cursor.nextElementSibling;
+        else body.insertBefore(row, cursor);
+        oldRows.delete(id);
+      });
+      oldRows.forEach(row => row.remove());
+      if (focusedTx) body.querySelector(`select[data-tx-id="${focusedTx}"]`)?.focus({ preventScroll: true });
+      scroll.scrollTop = scrollTop; scroll.scrollLeft = scrollLeft;
       $("#ledger-display-empty").textContent = ledgerDisplayItems.length ? "没有符合筛选条件的交易" : "这个账本还没有交易";
       $("#ledger-display-empty").classList.toggle("hidden", visible.length > 0);
       updateLedgerSelection();
@@ -1673,8 +1751,9 @@
           method: "POST", body: { category, remember: true }
         });
         showFlash("分类已更新，所有账本同步");
-        await loadLedgerStats();
-        loadLedgers(); loadDetail(); loadSummary();
+        await loadLedgers();
+        if ($("#page-detail").classList.contains("active")) loadDetail();
+        loadSummary();
       } catch (err) {
         showFlash(err.message, true);
         loadLedgerStats();
@@ -1683,24 +1762,40 @@
     $("#btn-ledger-clear-filter").addEventListener("click", () => {
       ledgerDisplayFilter = null;
       ledgerSelectedIds.clear();
+      ledgerSelectedMembers.clear();
       ledgerTableTools.reset(false);
       $("#ledger-display-title").textContent = `${currentLedger} · 账本明细`;
       renderLedgerDisplay();
     });
     $("#ledger-display-body").addEventListener("change", (event) => {
-      if (!event.target.classList.contains("ledger-row-check")) return;
-      const id = event.target.value;
-      if (event.target.checked && ledgerSelectedIds.size >= 200) {
-        event.target.checked = false;
-        showFlash("每次最多选择 200 项", true);
+      if (event.target.classList.contains("ledger-member-check")) {
+        const input = event.target, id = Number(input.value);
+        const group = ledgerDisplayItems.find(item => String(item.id) === input.dataset.groupId);
+        if (!group) return;
+        if (ledgerSelectedIds.delete(String(group.id))) group.members.forEach(member => ledgerSelectedMembers.add(member.id));
+        if (input.checked) ledgerSelectedMembers.add(id); else ledgerSelectedMembers.delete(id);
+        if (group.members.every(member => ledgerSelectedMembers.has(member.id))) {
+          ledgerSelectedIds.add(String(group.id));
+          group.members.forEach(member => ledgerSelectedMembers.delete(member.id));
+        }
+        updateLedgerSelection();
         return;
       }
+      if (!event.target.classList.contains("ledger-row-check")) return;
+      const id = event.target.value;
       if (event.target.checked) ledgerSelectedIds.add(id); else ledgerSelectedIds.delete(id);
+      const group = ledgerDisplayItems.find(item => String(item.id) === id && item.type === "group");
+      if (group) group.members.forEach(member => ledgerSelectedMembers.delete(member.id));
+      updateLedgerSelection();
+    });
+    $("#ledger-check-all").addEventListener("change", event => {
+      ledgerSelectedIds.clear(); ledgerSelectedMembers.clear();
+      if (event.target.checked) $$("#ledger-display-body .ledger-row-check").forEach(input => ledgerSelectedIds.add(input.value));
       updateLedgerSelection();
     });
     function renderLedgerBars(selector, map, total, direction) {
       const entries = Object.entries(map).sort((a, b) => b[1] - a[1]);
-      $(selector).innerHTML = entries.map(([cat, amt]) => {
+      const markup = entries.map(([cat, amt]) => {
         const pct = total ? Math.max(0, Math.min(100, amt / total * 100)) : 0;
         return `<div class="cat-row" data-cat="${esc(cat)}" data-dir="${direction}" onclick="filterLedgerDisplay(this.dataset.cat, this.dataset.dir)" style="cursor:pointer;">
           <div class="cat-name" title="${esc(cat)}">${esc(cat)}</div>
@@ -1708,6 +1803,7 @@
           <div class="cat-amt">¥${Number(amt).toFixed(2)} · ${total ? (amt / total * 100).toFixed(1) : 0}%</div>
         </div>`;
       }).join("") || '<div class="empty">暂无记录</div>';
+      if ($(selector)._barsMarkup !== markup) { $(selector).innerHTML = markup; $(selector)._barsMarkup = markup; }
     }
     function findLedgerSource(txId) {
       for (const item of ledgerDisplayItems) {
@@ -2049,6 +2145,7 @@
     function openLedger(name) {
       currentLedger = name;
       ledgerDisplayFilter = null;
+      ledgerSelectedIds.clear(); ledgerSelectedMembers.clear();
       ledgerTableTools.reset(false);
       ledgerViewMode = "total";
       $("#btn-ledger-total").classList.add("active");
@@ -2962,6 +3059,62 @@
 
     // ---------------- 明细 ----------------
     let detailState = { selected: new Set(), items: [] };
+    let batchOrganizeContext = null;
+    function openBatchOrganize(source) {
+      const ids = source === "ledger" ? selectedLedgerSourceIds() : [...detailState.selected];
+      if (!ids.length || ids.length > 5000) { showFlash("请选择 1 至 5000 笔原始交易", true); return; }
+      batchOrganizeContext = { source, ids };
+      $("#batch-organize-count").textContent = `将统一设置 ${ids.length} 笔原始交易；选中的整组会包含组内全部流水。`;
+      $("#batch-organize-category").innerHTML = '<option value="">不修改分类</option>' + allCategories.map(category =>
+        `<option value="${esc(category)}">${esc(category)}</option>`).join("");
+      $("#batch-organize-mode").value = "keep";
+      $("#batch-organize-ledgers").innerHTML = [
+        '<label><input type="checkbox" value="0">主账本</label>',
+        ...allLedgers.filter(ledger => !ledger.deleted).map(ledger =>
+          `<label><input type="checkbox" value="${ledger.id}">${esc(ledger.name)}</label>`)
+      ].join("");
+      updateBatchOrganizeMode();
+      $("#batch-organize-modal").classList.remove("hidden");
+      $("#batch-organize-category").focus();
+    }
+    function updateBatchOrganizeMode() {
+      const mode = $("#batch-organize-mode").value;
+      $("#batch-organize-ledgers").classList.toggle("hidden", mode === "keep");
+      $("#batch-organize-help").textContent = {
+        keep: "可只修改分类，也可同时设置账本。",
+        add: "加入勾选的账本，保留其他账本归属。",
+        replace: "只保留勾选的账本；全部不勾选时，交易进入未分配账本。",
+        remove: "只从勾选的账本移出，其他账本归属继续保留。"
+      }[mode];
+    }
+    $("#btn-ledger-batch").addEventListener("click", () => openBatchOrganize("ledger"));
+    $("#btn-batch-organize").addEventListener("click", () => openBatchOrganize("detail"));
+    $("#batch-organize-mode").addEventListener("change", updateBatchOrganizeMode);
+    $("#btn-batch-organize-close").addEventListener("click", () => $("#batch-organize-modal").classList.add("hidden"));
+    $("#btn-batch-organize-save").addEventListener("click", async () => {
+      if (!batchOrganizeContext) return;
+      const { source, ids } = batchOrganizeContext;
+      const category = $("#batch-organize-category").value;
+      const ledger_mode = $("#batch-organize-mode").value;
+      const ledger_ids = $$("#batch-organize-ledgers input:checked").map(input => Number(input.value));
+      if (!category && ledger_mode === "keep") { showFlash("请选择要修改的分类或账本", true); return; }
+      if (["add", "remove"].includes(ledger_mode) && !ledger_ids.length) { showFlash("请至少选择一个账本", true); return; }
+      const button = $("#btn-batch-organize-save");
+      button.disabled = true;
+      try {
+        const result = await api("/api/transactions/batch-organize", {
+          method: "POST", body: { ids, ...(category ? {category} : {}), ledger_mode, ledger_ids }
+        });
+        $("#batch-organize-modal").classList.add("hidden");
+        ledgerSelectedIds.clear(); ledgerSelectedMembers.clear(); detailState.selected.clear();
+        updateSelectionBar();
+        showFlash(`已更新 ${result.updated} 笔交易的分类和账本设置`);
+        await loadLedgers();
+        if (source === "detail") await loadDetail();
+        loadSummary();
+      } catch (err) { showFlash(err.message, true); }
+      finally { button.disabled = false; }
+    });
     const detailTableTools = new TableTools("#detail-table", [
       { key: "time", label: "时间", type: "date", value: item => (item.transaction_time || "").slice(0, 10), sortValue: item => item.transaction_time },
       { key: "source", label: "来源", value: item => sourceName[item.source] || item.source },
